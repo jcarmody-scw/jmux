@@ -433,3 +433,123 @@ func TestRunSubcommandHelp(t *testing.T) {
 		}
 	}
 }
+
+func TestSnapshotPumpRoute(t *testing.T) {
+	cases := []struct {
+		eventType    string
+		wantSessions bool
+		wantWorld    bool
+	}{
+		// Session changes only fire the sessions snapshot.
+		{"session-upsert", true, false},
+		{"session-remove", true, false},
+
+		// Peer status only changes the world bundle.
+		{"peer-status", false, true},
+
+		// projects-update fires both kinds. Regression guard: prior
+		// versions of the pump routed projects-update only to the
+		// world coalescer, leaving session ProjectSlug / ProjectIndex
+		// stamps unflushed after a projects.json edit.
+		{"projects-update", true, true},
+
+		// Activity is delivered separately (bare bus); the pump must
+		// not coalesce it.
+		{"session-activity", false, false},
+
+		// Unknown / future event types are silently ignored.
+		{"", false, false},
+		{"unknown-type", false, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.eventType, func(t *testing.T) {
+			gotSessions, gotWorld := snapshotPumpRoute(tc.eventType)
+			if gotSessions != tc.wantSessions || gotWorld != tc.wantWorld {
+				t.Errorf("snapshotPumpRoute(%q) = (sessions=%v, world=%v), want (sessions=%v, world=%v)",
+					tc.eventType, gotSessions, gotWorld, tc.wantSessions, tc.wantWorld)
+			}
+		})
+	}
+}
+
+func TestShouldForwardActivity(t *testing.T) {
+	// Local peer "dc" is a devcontainer; "hub-b" is a network peer.
+	isLocalPeer := func(name string) bool { return name == "dc" }
+
+	cases := []struct {
+		name      string
+		asPeer    bool
+		sessionID string
+		want      bool
+	}{
+		// Browser sees everything, regardless of namespace.
+		{"browser local session", false, "sess-1", true},
+		{"browser devcontainer session", false, "sess-1@dc", true},
+		{"browser network-peer session", false, "sess-1@hub-b", true},
+
+		// Hub (asPeer) only sees activity for sessions this node owns.
+		{"asPeer local session", true, "sess-1", true},
+		{"asPeer devcontainer session", true, "sess-1@dc", true},
+		{"asPeer network-peer session dropped", true, "sess-1@hub-b", false},
+
+		// Defense: nil isLocalPeer means “no locals”, so any namespaced
+		// id is dropped for asPeer (e.g. peerManager not yet wired).
+		{"asPeer nil isLocalPeer drops namespaced", true, "sess-1@dc", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lookup := isLocalPeer
+			if tc.name == "asPeer nil isLocalPeer drops namespaced" {
+				lookup = nil
+			}
+			got := shouldForwardActivity(tc.asPeer, tc.sessionID, lookup)
+			if got != tc.want {
+				t.Errorf("shouldForwardActivity(asPeer=%v, %q) = %v, want %v",
+					tc.asPeer, tc.sessionID, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsAllowedPeerProxyPath(t *testing.T) {
+	cases := []struct {
+		name   string
+		method string
+		sub    string
+		want   bool
+	}{
+		// Allowed: project session reorder.
+		{"reorder allowed", http.MethodPatch, "v1/projects/gmux/sessions", true},
+		{"reorder allowed weird slug", http.MethodPatch, "v1/projects/with-dash/sessions", true},
+
+		// Method must be PATCH.
+		{"GET denied", http.MethodGet, "v1/projects/gmux/sessions", false},
+		{"POST denied", http.MethodPost, "v1/projects/gmux/sessions", false},
+		{"DELETE denied", http.MethodDelete, "v1/projects/gmux/sessions", false},
+
+		// Path shape: must be projects/<slug>/sessions.
+		{"reorder root denied", http.MethodPatch, "v1/projects", false},
+		{"reorder add denied", http.MethodPatch, "v1/projects/add", false},
+		{"projects bare denied", http.MethodPatch, "v1/projects/gmux", false},
+		{"sessions endpoint denied", http.MethodPatch, "v1/sessions/sess-1/kill", false},
+		{"unrelated path denied", http.MethodPatch, "v1/health", false},
+
+		// Defense: never allow without the v1/ prefix even if shape matches.
+		{"missing v1 prefix denied", http.MethodPatch, "projects/gmux/sessions", false},
+
+		// Defense: don't accept random suffixes after /sessions.
+		{"trailing path denied", http.MethodPatch, "v1/projects/gmux/sessions/extra", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isAllowedPeerProxyPath(tc.method, tc.sub)
+			if got != tc.want {
+				t.Errorf("isAllowedPeerProxyPath(%q, %q) = %v, want %v",
+					tc.method, tc.sub, got, tc.want)
+			}
+		})
+	}
+}
