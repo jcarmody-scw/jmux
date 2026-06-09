@@ -40,3 +40,4 @@ gmux gmuxd
 tasks/gmux/scrollback-demo-script.sh
 tasks/gmux/*.webm
 .pi/node_modules
+logd
