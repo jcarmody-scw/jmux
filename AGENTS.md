@@ -81,4 +81,7 @@ isolated daemon — do not mix it with the manual verification setups above.
 
 - Push changes and create pull requests. Don't commit directly to
   `main`.
+- **Never open a PR against `gmuxapp/gmux` (the upstream repo).** Always
+  use the fork remote (`fork`, `https://github.com/jcarmody-scw/jmux.git`)
+  and target its `main` branch: `gh pr create --repo jcarmody-scw/jmux --base main`.
 - Use `./scripts/install.sh` when asked to install locally.
