@@ -1,20 +1,27 @@
 /**
  * FileTree — filesystem browser panel for the sidebar.
  *
- * Thin Preact wrapper around @pierre/trees (vanilla FileTree class).
- * The library owns its shadow DOM; this component handles:
- *   - GET /v1/fs/{slug}/walk   → paths fed to tree.resetPaths()
- *   - GET /v1/git/{slug}/files  → per-file status fed to tree.setGitStatus()
+ * Uses @pierre/trees/react (useFileTree hook + <FileTree> component) to render
+ * the file tree. The library owns its shadow DOM; this component handles:
+ *   - GET /v1/fs/{slug}/walk   → paths fed to model.resetPaths()
+ *   - GET /v1/git/{slug}/files  → per-file status fed to model.setGitStatus()
  *   - rename / move / delete / create callbacks → REST mutations + refresh
  *   - External file drop (Finder → upload)
  *   - Show-hidden toggle, new-file/new-folder buttons
- *   - Delete confirmation modal (vanilla <dialog> pattern, rendered in Preact)
+ *   - Delete confirmation modal
  *
  * All filesystem mutations go through /v1/fs/{slug}/* REST endpoints.
  */
 
 import { useState, useCallback, useRef, useEffect } from 'preact/hooks'
-import { FileTree as PierreFileTree, type GitStatusEntry } from '@pierre/trees'
+import { useFileTree, FileTree as PierreFileTree } from '@pierre/trees/react'
+import type {
+  GitStatusEntry,
+  ContextMenuItem as FileTreeContextMenuItem,
+  ContextMenuOpenContext as FileTreeContextMenuOpenContext,
+  FileTreeDropResult,
+  FileTreeRenameEvent,
+} from '@pierre/trees'
 import {
   markPendingLaunch,
   navigateToMarkdownEditor,
@@ -83,6 +90,22 @@ export function pruneExpanded(expanded: Set<string>, deletedPath: string): Set<s
   return next
 }
 
+
+/**
+ * Collect the paths of expanded directories by querying the model for each
+ * directory path in the current walk response. Preserves expansion state
+ * across resetPaths() calls so polling doesn't collapse user-opened folders.
+ */
+export function getExpandedPaths(
+  model: { getItem(path: string): import('@pierre/trees').FileTreeItemHandle | null },
+  dirPaths: string[],
+): string[] {
+  return dirPaths.filter(p => {
+    const item = model.getItem(p)
+    return item !== null && item.isDirectory() && (item as import('@pierre/trees').FileTreeDirectoryHandle).isExpanded()
+  })
+}
+
 /**
  * Returns true if a DragEvent carries external files (e.g. from Finder/Explorer).
  */
@@ -129,10 +152,24 @@ async function apiFetch(
   return resp.json()
 }
 
-async function apiWalkPaths(slug: string): Promise<string[]> {
-  const resp = await apiFetch('GET', `/v1/fs/${encodeURIComponent(slug)}/walk`)
+async function apiWalkPaths(slug: string, includeHidden: boolean): Promise<string[]> {
+  const params = new URLSearchParams()
+  if (includeHidden) params.set('include_hidden', 'true')
+  const qs = params.size ? `?${params}` : ''
+  const resp = await apiFetch('GET', `/v1/fs/${encodeURIComponent(slug)}/walk${qs}`)
   if (!resp.ok) throw new Error((resp.error?.message) ?? 'walk failed')
   return resp.data as string[]
+}
+
+type WalkDelta =
+  | { reset: true }
+  | { wait: true }
+  | { added: string[]; removed: string[]; version: number }
+
+async function apiWalkDelta(slug: string, version: number): Promise<WalkDelta> {
+  const resp = await apiFetch('GET', `/v1/fs/${encodeURIComponent(slug)}/walk?since=${version}`)
+  if (!resp.ok) return { reset: true }
+  return resp.data as WalkDelta
 }
 
 async function apiGitFiles(slug: string): Promise<GitStatusEntry[]> {
@@ -191,6 +228,14 @@ async function apiUpload(slug: string, dir: string, files: FileList): Promise<vo
   if (!json.ok) throw new Error((json.error?.message) ?? 'upload failed')
 }
 
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+/** Strip trailing slash from directory paths (for API calls). */
+function stripSlash(p: string): string {
+  return p.endsWith('/') ? p.slice(0, -1) : p
+}
+
+
 // ── Minimal icons for the header ────────────────────────────────────────────
 
 const svgProps = {
@@ -226,21 +271,6 @@ const IconFolderPlus = () => (
   </svg>
 )
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
-
-/** Strip trailing slash from directory paths (for API calls). */
-function stripSlash(p: string): string {
-  return p.endsWith('/') ? p.slice(0, -1) : p
-}
-
-/** Filter paths to hide hidden files/directories unless showHidden is true. */
-function filterPaths(paths: string[], showHidden: boolean): string[] {
-  if (showHidden) return paths
-  return paths.filter(p =>
-    p.split('/').every(seg => !seg || !isHiddenName(seg)),
-  )
-}
-
 // ── Component ────────────────────────────────────────────────────────────────
 
 export interface FileTreeProps {
@@ -252,9 +282,6 @@ export interface FileTreeProps {
 }
 
 export function FileTree({ projectSlug, cwd }: FileTreeProps) {
-  const containerRef = useRef<HTMLDivElement>(null)
-  const treeRef = useRef<PierreFileTree | null>(null)
-
   const [showHidden, setShowHidden] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [externalDragOver, setExternalDragOver] = useState(false)
@@ -264,16 +291,21 @@ export function FileTree({ projectSlug, cwd }: FileTreeProps) {
     isFolder: boolean
   } | null>(null)
 
-  // Refs so that callbacks captured at mount time always see fresh values.
+  // Keep fresh values accessible from stable model callbacks via refs.
   const showHiddenRef = useRef(showHidden)
+  const projectSlugRef = useRef(projectSlug)
+  const cwdRef = useRef(cwd)
   useEffect(() => { showHiddenRef.current = showHidden }, [showHidden])
-
-  // setPendingDelete is a stable Preact state setter — safe to capture once.
-  const setPendingDeleteRef = useRef(setPendingDelete)
-  useEffect(() => { setPendingDeleteRef.current = setPendingDelete }, [setPendingDelete])
+  useEffect(() => { projectSlugRef.current = projectSlug }, [projectSlug])
+  useEffect(() => { cwdRef.current = cwd }, [cwd])
 
   // Tracks whether the next rename commit is a new-item creation.
   const pendingCreateTypeRef = useRef<'file' | 'dir' | null>(null)
+
+  // Guard: suppress onSelectionChange callbacks that fire when resetPaths()
+  // restores the previously-selected path after a reload (every 2.5s poll).
+  // Without this guard, apiOpen fires on every polling cycle.
+  const resettingPathsRef = useRef(false)
 
   // Error banner with auto-dismiss.
   const errorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -282,192 +314,269 @@ export function FileTree({ projectSlug, cwd }: FileTreeProps) {
     setError(msg)
     errorTimerRef.current = setTimeout(() => setError(null), 4000)
   }, [])
+  const showErrorRef = useRef(showError)
+  useEffect(() => { showErrorRef.current = showError }, [showError])
 
   // ── Data fetchers ──
 
+  // Stable model ref — set immediately since useFileTree creates the model
+  // synchronously in useState(); updated after each render just in case.
+  const modelRef = useRef<ReturnType<typeof useFileTree>['model'] | null>(null)
+
+  // walkVersionRef: the snapshot version last received from the server.
+  // null = Worker hasn't completed yet; poll skips file-tree deltas until set.
+  const walkVersionRef = useRef<number | null>(null)
+  // walkWorkerRef: the active full-walk Worker, so we can terminate it on reload.
+  const walkWorkerRef = useRef<Worker | null>(null)
+
   const loadPaths = useCallback(async () => {
+    const model = modelRef.current
+    if (!model) return
     try {
-      const all = await apiWalkPaths(projectSlug)
-      const filtered = filterPaths(all, showHiddenRef.current)
-      treeRef.current?.resetPaths(filtered)
+      // Phase 1: depth-3 fast walk — renders the tree immediately.
+      const paths = await apiWalkPaths(projectSlugRef.current, showHiddenRef.current)
+      const dirPaths = paths.filter(p => p.endsWith('/'))
+      const expandedPaths = getExpandedPaths(model, dirPaths)
+      resettingPathsRef.current = true
+      setTimeout(() => { resettingPathsRef.current = false }, 0)
+      model.resetPaths(paths, { initialExpandedPaths: expandedPaths })
+
+      // Phase 2: spawn a Worker to stream the full walk without blocking the
+      // main thread. Worker posts batches; we batch-add new paths as they
+      // arrive. On 'done', we record the server version for delta polling.
+      // Terminate any previous Worker so we don't have two racing.
+      walkWorkerRef.current?.terminate()
+      walkVersionRef.current = null
+      const worker = new Worker(new URL('./walk-worker.ts', import.meta.url), { type: 'module' })
+      walkWorkerRef.current = worker
+      const knownPaths = new Set(paths)
+      worker.onmessage = (e: MessageEvent<
+        | { type: 'batch'; paths: string[] }
+        | { type: 'done'; version: number }
+        | { type: 'error'; message: string }
+      >) => {
+        const msg = e.data
+        if (msg.type === 'batch') {
+          // Deduplicate within the batch and against already-known paths.
+          const seen = new Set<string>()
+          const additions = msg.paths.filter(p => {
+            if (knownPaths.has(p) || seen.has(p)) return false
+            seen.add(p)
+            return true
+          })
+          additions.forEach(p => knownPaths.add(p))
+          if (additions.length > 0) {
+            modelRef.current?.batch(additions.map(p => ({ type: 'add' as const, path: p })))
+          }
+        } else if (msg.type === 'done') {
+          walkVersionRef.current = msg.version
+          walkWorkerRef.current = null
+          worker.terminate()
+        } else {
+          console.warn('[gmux] file-tree: walk worker error', msg.message)
+          walkWorkerRef.current = null
+          worker.terminate()
+        }
+      }
+      worker.postMessage({ slug: projectSlugRef.current, includeHidden: showHiddenRef.current })
     } catch (e) {
-      showError(String(e))
+      console.error('[gmux] file-tree: walk failed for slug', projectSlugRef.current, e)
+      showErrorRef.current(String(e))
     }
-  }, [projectSlug, showError])
+  }, [])
 
   const refreshGitStatus = useCallback(async () => {
+    const model = modelRef.current
+    if (!model) return
     try {
-      const entries = await apiGitFiles(projectSlug)
-      treeRef.current?.setGitStatus(entries)
+      const entries = await apiGitFiles(projectSlugRef.current)
+      model.setGitStatus(entries)
     } catch {
       // git status errors are non-fatal — keep last known state
     }
-  }, [projectSlug])
+  }, [])
 
-  // ── Mount the @pierre/trees vanilla FileTree ──
+  // Stable refs for event callbacks passed to useFileTree (called by the
+  // library; need to see the latest loadPaths / showError without
+  // re-creating the model).
+  const loadPathsRef   = useRef(loadPaths)
+  const refreshGitStatusRef = useRef(refreshGitStatus)
+  useEffect(() => { loadPathsRef.current = loadPaths }, [loadPaths])
+  useEffect(() => { refreshGitStatusRef.current = refreshGitStatus }, [refreshGitStatus])
 
-  useEffect(() => {
-    const el = containerRef.current
-    if (!el) return
+  // ── Build the @pierre/trees model via hook ──
+  // Options are stable wrappers that call the latest ref — model is created
+  // only once regardless of projectSlug changes (projectSlug is read from ref).
 
-    const tree = new PierreFileTree({
-      paths: [],
-      initialExpansion: 1,
-      search: true,
+  const { model } = useFileTree({
+    paths: [],
+    initialExpansion: 0,  // start collapsed; auto-expanding races with expand/collapse tests
+    search: true,
 
-      dragAndDrop: {
-        onDropComplete: async event => {
-          // `event.target.directoryPath` is null for root drops; treat as ''.
-          const dir = event.target.directoryPath ?? ''
-          await Promise.allSettled(
-            event.draggedPaths.map(async fromPath => {
-              const base = stripSlash(fromPath).split('/').pop() ?? stripSlash(fromPath)
-              const toPath = dir ? `${dir}${base}` : base
-              if (stripSlash(fromPath) !== toPath) {
-                try {
-                  await apiMove(projectSlug, stripSlash(fromPath), toPath)
-                } catch (e) {
-                  showError(String(e))
-                }
+    dragAndDrop: {
+      onDropComplete: async (event: FileTreeDropResult) => {
+        const dir = event.target.directoryPath ?? ''
+        await Promise.allSettled(
+          event.draggedPaths.map(async fromPath => {
+            const base = stripSlash(fromPath).split('/').pop() ?? stripSlash(fromPath)
+            const toPath = dir ? `${dir}${base}` : base
+            if (stripSlash(fromPath) !== toPath) {
+              try {
+                await apiMove(projectSlugRef.current, stripSlash(fromPath), toPath)
+              } catch (e) {
+                showErrorRef.current(String(e))
               }
-            }),
-          )
-          void loadPaths()
-        },
+            }
+          }),
+        )
+        void loadPathsRef.current()
       },
+    },
 
-      renaming: {
-        onRename: async event => {
-          const src = stripSlash(event.sourcePath)
-          const dest = stripSlash(event.destinationPath)
-          const createType = pendingCreateTypeRef.current
-          if (createType) {
-            pendingCreateTypeRef.current = null
-            try {
-              if (createType === 'dir') {
-                await apiMkdir(projectSlug, dest)
-              } else {
-                await apiCreateFile(projectSlug, dest)
-                await apiOpen(projectSlug, dest)
-              }
-            } catch (e) {
-              showError(String(e))
+    renaming: {
+      onRename: async (event: FileTreeRenameEvent) => {
+        const src = stripSlash(event.sourcePath)
+        const dest = stripSlash(event.destinationPath)
+        const createType = pendingCreateTypeRef.current
+        if (createType) {
+          pendingCreateTypeRef.current = null
+          try {
+            if (createType === 'dir') {
+              await apiMkdir(projectSlugRef.current, dest)
+            } else {
+              await apiCreateFile(projectSlugRef.current, dest)
+              await apiOpen(projectSlugRef.current, dest)
             }
-          } else if (src !== dest) {
-            try {
-              await apiRename(projectSlug, src, dest)
-            } catch (e) {
-              showError(String(e))
-            }
+          } catch (e) {
+            showErrorRef.current(String(e))
           }
-          void loadPaths()
-        },
-      },
-
-      onSelectionChange: selectedPaths => {
-        const path = selectedPaths[0]
-        // Skip empty selection or directory selection.
-        if (!path || path.endsWith('/')) return
-        if (path.toLowerCase().endsWith('.md')) {
-          navigateToMarkdownEditor(projectSlug, path)
-        } else if (/\.html?$/i.test(path)) {
-          void apiOpenBrowser(projectSlug, path)
-        } else if (/\.(png|jpe?g|gif|webp|svg|bmp|ico|tiff?|avif)$/i.test(path)) {
-          navigateToImageViewer(projectSlug, path)
-        } else {
-          const existing = findOpenFileSession(sessions.value, cwd, path)
-          if (existing) {
-            navigateToSession(existing.id)
-          } else {
-            void apiOpen(projectSlug, path)
+        } else if (src !== dest) {
+          try {
+            await apiRename(projectSlugRef.current, src, dest)
+          } catch (e) {
+            showErrorRef.current(String(e))
           }
         }
+        void loadPathsRef.current()
       },
+    },
 
-      composition: {
-        contextMenu: {
-          enabled: true,
-          triggerMode: 'both',
-          render: (item, context) => {
-            const menu = document.createElement('div')
-            menu.className = 'ft-ctx-menu'
-            // Mark as owned surface so the library doesn't treat inside-clicks
-            // as outside clicks that dismiss the menu.
-            menu.setAttribute('data-file-tree-context-menu-root', 'true')
+    onSelectionChange: (selectedPaths: readonly string[]) => {
+      // Ignore auto-selections triggered by resetPaths() restoring the
+      // previously selected path — only act on explicit user interactions.
+      if (resettingPathsRef.current) return
+      const path = selectedPaths[0]
+      if (!path || path.endsWith('/')) return
+      const slug = projectSlugRef.current
+      const cwd  = cwdRef.current
+      if (path.toLowerCase().endsWith('.md')) {
+        navigateToMarkdownEditor(slug, path)
+      } else if (/\.html?$/i.test(path)) {
+        void apiOpenBrowser(slug, path)
+      } else if (/\.(png|jpe?g|gif|webp|svg|bmp|ico|tiff?|avif)$/i.test(path)) {
+        navigateToImageViewer(slug, path)
+      } else {
+        const existing = findOpenFileSession(sessions.value, cwd, path)
+        if (existing) {
+          navigateToSession(existing.id)
+        } else {
+          void apiOpen(slug, path)
+        }
+      }
+    },
+  })
 
-            const addBtn = (label: string, className: string, action: () => void) => {
-              const btn = document.createElement('button')
-              btn.className = `ft-ctx-item${className ? ' ' + className : ''}`
-              btn.textContent = label
-              btn.onclick = action
-              menu.appendChild(btn)
-            }
+  // Keep modelRef in sync (model is stable but this is defensive).
+  modelRef.current = model
 
-            addBtn('Rename', '', () => {
-              context.close({ restoreFocus: false })
-              treeRef.current?.startRenaming(item.path)
-            })
-
-            addBtn('Copy path', '', () => {
-              context.close()
-              void copyRelativePath(stripSlash(item.path))
-            })
-
-            addBtn('Delete', 'ft-ctx-item--danger', () => {
-              context.close()
-              const name = stripSlash(item.path).split('/').pop() ?? item.path
-              setPendingDeleteRef.current({
-                path: item.path,
-                name,
-                isFolder: item.kind === 'directory',
-              })
-            })
-
-            return menu
-          },
-        },
-      },
-    })
-
-    tree.render({ containerWrapper: el })
-    treeRef.current = tree
-
+  // ── Initial load + projectSlug change: reset paths when slug changes ──
+  useEffect(() => {
     void loadPaths()
     void refreshGitStatus()
-
-    return () => {
-      tree.cleanUp()
-      treeRef.current = null
-    }
-    // Intentional: only re-mount when projectSlug changes (cwd follows projectSlug).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectSlug])
+  }, [projectSlug, loadPaths, refreshGitStatus])
 
   // Re-filter paths when showHidden toggles.
   useEffect(() => {
     void loadPaths()
   }, [showHidden, loadPaths])
 
-  // Poll: refresh paths + git status every 2.5 s.
+  // Poll: delta file-tree update + git status every 2.5 s.
+  // File-tree uses walk?since=<version> for cheap incremental updates.
+  // The file-tree delta poll is skipped until the Worker completes (version known).
   useEffect(() => {
-    const id = setInterval(() => {
-      void loadPaths()
+    const id = setInterval(async () => {
       void refreshGitStatus()
+      const v = walkVersionRef.current
+      if (v === null) return // Worker still streaming; skip
+      const model = modelRef.current
+      if (!model) return
+      try {
+        const delta = await apiWalkDelta(projectSlugRef.current, v)
+        if ('reset' in delta) {
+          // Too far behind or first sync — do a full reload.
+          void loadPathsRef.current()
+        } else if ('wait' in delta) {
+          // Snapshot not ready yet; try again next tick.
+        } else {
+          if (delta.version !== v) walkVersionRef.current = delta.version
+          if (delta.added.length > 0 || delta.removed.length > 0) {
+            model.batch([
+              ...delta.added.map(p => ({ type: 'add' as const, path: p })),
+              ...delta.removed.map(p => ({ type: 'remove' as const, path: p })),
+            ])
+          }
+        }
+      } catch (e) {
+        console.warn('[gmux] file-tree: delta poll failed', e)
+      }
     }, 2500)
     return () => clearInterval(id)
   }, [loadPaths, refreshGitStatus])
 
+  // ── Filename tooltips in shadow DOM ──
+  // @pierre/trees renders inside a shadow root — we can't add `title` via CSS.
+  // This observer watches the shadow root for label elements and stamps the
+  // full path as a native tooltip so truncated names are readable on hover.
+  useEffect(() => {
+    const container = document.querySelector('file-tree-container')
+    const shadow = container?.shadowRoot
+    if (!shadow) return
+
+    function stampTitles(root: ShadowRoot | Element) {
+      // The library marks item labels with data-item-section="label" or
+      // data-item-section="name". Fall back to any span inside [data-path].
+      const labelEls = root.querySelectorAll<HTMLElement>([
+        '[data-item-section="label"]',
+        '[data-item-section="name"]',
+        '[data-path] [data-item-label]',
+        '[data-path] span[class*="label"]',
+      ].join(','))
+      labelEls.forEach(el => {
+        const row = el.closest<HTMLElement>('[data-path]')
+        if (!row) return
+        const path = row.dataset.path ?? ''
+        const name = path.replace(/\/$/, '').split('/').pop() ?? path
+        if (name && el.getAttribute('title') !== name) el.setAttribute('title', name)
+      })
+    }
+
+    stampTitles(shadow)
+    const obs = new MutationObserver(() => stampTitles(shadow))
+    obs.observe(shadow, { childList: true, subtree: true, attributes: false })
+    return () => obs.disconnect()
+  }, [])  // run once — observer handles all subsequent updates
+
   // ── New item creation ──
 
   const handleAddStart = useCallback((type: 'file' | 'dir') => {
-    const tree = treeRef.current
-    if (!tree) return
-    // Use a non-hidden placeholder so it's visible regardless of showHidden.
     const placeholder = type === 'dir' ? '__new-folder__/' : '__new-file__'
     pendingCreateTypeRef.current = type
-    tree.add(placeholder)
-    tree.startRenaming(placeholder, { removeIfCanceled: true })
-  }, [])
+    // Suppress the auto-selection that tree.add()+startRenaming() triggers.
+    resettingPathsRef.current = true
+    setTimeout(() => { resettingPathsRef.current = false }, 0)
+    model.add(placeholder)
+    model.startRenaming(placeholder, { removeIfCanceled: true })
+  }, [model])
 
   // ── Delete confirm ──
 
@@ -482,6 +591,48 @@ export function FileTree({ projectSlug, cwd }: FileTreeProps) {
       showError(String(e))
     }
   }, [pendingDelete, projectSlug, loadPaths, showError])
+
+  // ── Context menu (rendered as Preact JSX via renderContextMenu prop) ──
+
+  const renderContextMenu = useCallback(
+    (item: FileTreeContextMenuItem, context: FileTreeContextMenuOpenContext) => (
+      <div class="ft-ctx-menu">
+        <button
+          class="ft-ctx-item"
+          onClick={() => {
+            context.close({ restoreFocus: false })
+            model.startRenaming(item.path)
+          }}
+        >
+          Rename
+        </button>
+        <button
+          class="ft-ctx-item"
+          onClick={() => {
+            context.close()
+            void copyRelativePath(stripSlash(item.path))
+          }}
+        >
+          Copy path
+        </button>
+        <button
+          class="ft-ctx-item ft-ctx-item--danger"
+          onClick={() => {
+            context.close()
+            const name = stripSlash(item.path).split('/').pop() ?? item.path
+            setPendingDelete({
+              path: item.path,
+              name,
+              isFolder: item.kind === 'directory',
+            })
+          }}
+        >
+          Delete
+        </button>
+      </div>
+    ),
+    [model],
+  )
 
   // ── External file drop onto the tree zone ──
 
@@ -541,7 +692,12 @@ export function FileTree({ projectSlug, cwd }: FileTreeProps) {
         onDragLeave={() => setExternalDragOver(false)}
         onDrop={handleRootDrop}
       >
-        <div ref={containerRef} class="ft-tree-inner" />
+        <div class="ft-tree-inner">
+          <PierreFileTree
+            model={model}
+            renderContextMenu={renderContextMenu}
+          />
+        </div>
       </div>
 
       {/* Delete confirmation modal */}

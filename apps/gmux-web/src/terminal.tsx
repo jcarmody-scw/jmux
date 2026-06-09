@@ -1,17 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks'
-import { Terminal, FitAddon, UrlRegexProvider, OSC8LinkProvider } from 'ghostty-web'
+import type { WTerm } from '@wterm/dom'
 import type { ResolvedTerminalOptions } from './settings-schema'
 import { attachKeyboardHandler, attachPasteHandler, ctrlSequenceFor, defaultPasteFeedback, handlePasteAction } from './keyboard'
 import { DEFAULT_THEME_COLORS, type ResolvedKeybind } from './config'
-import { attachMobileInputHandler } from './mobile-input'
 import { focusTerminalInput, useTouchPan } from './terminal-touch'
-import { selectionToText } from './selection'
+import { getSelectionText, clearSelection, selectAllAndCopy } from './selection'
+import { handleTerminalLinkClick } from './terminal-links'
 import { createReplayBuffer } from './replay'
 import { createTerminalIO, type TerminalSize } from './terminal-io'
+import { measureTerminalFit } from './terminal-fit'
+import { applyWtermTheme } from './terminal-theme'
 import { decideViewportResize, sameSize, useViewportResize } from './terminal-resize'
-import { ghosttyInitPromise } from './terminal-init'
+import { getGhosttyCore } from './terminal-init'
 import { useWebSocket } from './use-websocket'
-import { MOCK_BY_ID } from './mock-data/index'
 import type { Session } from './types'
 import type { ITheme } from './types'
 
@@ -20,21 +21,15 @@ import type { SyncDiag } from './terminal-types'
 
 // ── Config ──
 
-const USE_MOCK = import.meta.env.VITE_MOCK === '1' || location.search.includes('mock')
-
 /**
  * Re-export for backward compat (used by input-diagnostics.tsx).
- * The actual colors now live in config.ts as DEFAULT_THEME_COLORS.
  */
 export const TERM_THEME: ITheme = DEFAULT_THEME_COLORS
 
 // ── File-link interceptor ──
 //
-// Browsers block window.open("file://...", "_blank") for security reasons, so
-// OSC 8 hyperlinks with file:// URIs silently fail.  We intercept those calls
-// here and POST to /v1/open-path instead, which asks the gmux daemon to open
-// the file on the server (same machine) with the configured file opener.
-;
+// Browsers block window.open("file://...", "_blank") for security.
+// Intercept those calls and POST to /v1/open-path instead.
 ;(function interceptFileLinks() {
   const _orig = window.open.bind(window)
   window.open = function (url?: string | URL, target?: string, features?: string) {
@@ -54,42 +49,15 @@ export const TERM_THEME: ITheme = DEFAULT_THEME_COLORS
 
 // ── Utilities ──
 
-/**
- * Measure terminal cols/rows that fit within a given element using the FitAddon.
- */
-function measureTerminalFit(fitAddon: FitAddon): TerminalSize | null {
-  const dims = fitAddon.proposeDimensions()
-  if (!dims) return null
-  return { cols: dims.cols, rows: dims.rows }
-}
-
-/** Legacy wrapper — kept for call sites that need it. */
-export function getProposedTerminalSize(fit: FitAddon | null): TerminalSize | null {
-  if (!fit) return null
-  return measureTerminalFit(fit)
-}
-
 function announceResize(ws: WebSocket | null, dims: TerminalSize): void {
   if (!ws || ws.readyState !== WebSocket.OPEN) return
   ws.send(JSON.stringify({ type: 'resize', cols: dims.cols, rows: dims.rows }))
 }
 
-function buildGhosttyOptions(terminalOptions: ResolvedTerminalOptions) {
-  return {
-    fontSize:             terminalOptions.fontSize,
-    fontFamily:           terminalOptions.fontFamily,
-    cursorBlink:          terminalOptions.cursorBlink,
-    cursorStyle:          terminalOptions.cursorStyle,
-    theme:                terminalOptions.theme,
-    scrollback:           terminalOptions.scrollback,
-    smoothScrollDuration: terminalOptions.smoothScrollDuration,
-  }
-}
-
 // ── TerminalView ──
 
 /**
- * Single ghostty-web Terminal instance with reconnecting WebSocket.
+ * Single wterm Terminal instance with reconnecting WebSocket.
  *
  * When `isActive` is false the terminal is hidden (display:none) but its
  * WebSocket stays open. Switching sessions is now instant — no snapshot
@@ -133,8 +101,7 @@ export function TerminalView({
 }) {
   const shellRef     = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
-  const termRef      = useRef<Terminal | null>(null)
-  const fitAddonRef  = useRef<FitAddon | null>(null)
+  const termRef      = useRef<WTerm | null>(null)
   const wsRef        = useRef<WebSocket | null>(null)
   const reconnectTimer  = useRef<ReturnType<typeof setTimeout> | null>(null)
   const disposed        = useRef(false)
@@ -144,7 +111,6 @@ export function TerminalView({
   const altArmedRef     = useRef(altArmed)
   const termIoRef       = useRef<ReturnType<typeof createTerminalIO> | null>(null)
   const termEpochRef    = useRef(0)
-  const savedScrollRef  = useRef<Map<string, number>>(new Map())
   const isActiveRef     = useRef(isActive ?? true)
   // Stable handler refs — set during terminal setup, read by the isActive effect.
   const sendRawInputRef = useRef<((data: string) => void) | null>(null)
@@ -152,12 +118,11 @@ export function TerminalView({
   const focusActionRef  = useRef<(() => void) | null>(null)
   const copyActionRef   = useRef<(() => void) | null>(null)
 
-  const [ghosttyReady, setGhosttyReady] = useState(false)
-  const [termLoading,  setTermLoading]  = useState(true)
-  const [wsState,      setWsState]      = useState<'connecting' | 'open' | 'lost'>('connecting')
+  const [termReady,    setTermReady]   = useState(false)
+  const [termLoading,  setTermLoading] = useState(true)
+  const [wsState,      setWsState]     = useState<'connecting' | 'open' | 'lost'>('connecting')
   const [viewportSize, setViewportSize] = useState<TerminalSize | null>(null)
   const [scrolledUp,   setScrolledUp]  = useState(false)
-  const SCROLL_THRESHOLD = 3
   const [ptySize,      setPtySize]     = useState<TerminalSize | null>(null)
 
   // Sync diagnostics
@@ -165,17 +130,15 @@ export function TerminalView({
     syncPhase: 'idle', scrollbackBytes: 0, scrollbackMsgs: 0,
     syncStartedAt: null, syncEndedAt: null, pendingWrite: false,
     wsState: 'connecting', reconnects: 0, prefetchBytes: 0,
-    ghosttyScrollbackLines: 0, ghosttyScrollbackLimit: terminalOptions.scrollback,
+    scrollbackLines: 0, scrollbackLimit: terminalOptions.scrollback,
   })
   const reconnectCountRef = useRef(0)
-  // Route onSyncDiag through a ref so emitSyncDiag stays stable regardless of
-  // which session is active (onSyncDiag is undefined for inactive sessions).
   const onSyncDiagRef = useRef(onSyncDiag)
   onSyncDiagRef.current = onSyncDiag
   const emitSyncDiag = useCallback((patch: Partial<SyncDiag>) => {
     syncDiagRef.current = { ...syncDiagRef.current, ...patch }
     onSyncDiagRef.current?.(syncDiagRef.current)
-  }, []) // stable — reads prop via ref
+  }, [])
 
   const viewportSizeRef = useRef<TerminalSize | null>(null)
   const ptySizeRef      = useRef<TerminalSize | null>(null)
@@ -193,23 +156,22 @@ export function TerminalView({
   ctrlArmedRef.current     = ctrlArmed
   altArmedRef.current      = altArmed
 
-  // Kick off ghostty-web WASM init (shared promise — safe to await multiple times).
-  useEffect(() => {
-    ghosttyInitPromise.then(() => setGhosttyReady(true))
-  }, [])
-
   // ── Stable callbacks ──
 
   const queueResize = useCallback((size: TerminalSize) => {
-    termIoRef.current?.requestResize(size, termEpochRef.current)
+    termIoRef.current?.resize(size, termEpochRef.current)
   }, [])
 
   const queueData = useCallback((data: Uint8Array, onWritten?: () => void) => {
-    termIoRef.current?.enqueue(data, termEpochRef.current, onWritten)
+    if (onWritten) {
+      termIoRef.current?.writeMany([data], termEpochRef.current, onWritten)
+    } else {
+      termIoRef.current?.write(data, termEpochRef.current)
+    }
   }, [])
 
   const queueMany = useCallback((chunks: Uint8Array[], onWritten?: () => void) => {
-    termIoRef.current?.enqueueMany(chunks, termEpochRef.current, onWritten)
+    termIoRef.current?.writeMany(chunks, termEpochRef.current, onWritten)
   }, [])
 
   const resetResizeEchoGate = useCallback(() => {
@@ -246,10 +208,11 @@ export function TerminalView({
   }, [queueResize, releaseResizeEchoGate, resetResizeEchoGate])
 
   const processViewportResize = useCallback((forceDrive = false) => {
-    if (!isActiveRef.current) return // skip when hidden — fitAddon can't measure
-    const fit = fitAddonRef.current
-    if (!fit) return
-    const newVp   = measureTerminalFit(fit)
+    if (!isActiveRef.current) return
+    const term = termRef.current
+    const container = containerRef.current
+    if (!term || !container) return
+    const newVp   = measureTerminalFit(term, container)
     const gate    = resizeEchoGateRef.current
     const decision = decideViewportResize({
       prevViewport: viewportSizeRef.current,
@@ -271,10 +234,11 @@ export function TerminalView({
   processViewportResizeRef.current = processViewportResize
 
   const fitAndResize = useCallback(() => {
-    if (!isActiveRef.current) return // skip when hidden
-    const fit = fitAddonRef.current
-    if (!fit) return
-    const dims = measureTerminalFit(fit)
+    if (!isActiveRef.current) return
+    const term = termRef.current
+    const container = containerRef.current
+    if (!term || !container) return
+    const dims = measureTerminalFit(term, container)
     setViewportSize(dims); viewportSizeRef.current = dims
     if (!dims) return
     applyOwnedResize(dims)
@@ -285,8 +249,12 @@ export function TerminalView({
   }, [])
 
   const handleShellClick = useCallback((ev: MouseEvent) => {
+    // Don't steal focus when the user just made a text selection.
+    if (!(window.getSelection()?.isCollapsed ?? true)) return
     const target = ev.target
     if (target instanceof HTMLElement && target.closest('button, input, textarea, select, a, label, [role="button"]')) return
+    // Check for a URL at the click position before stealing focus.
+    if (handleTerminalLinkClick(ev)) return
     focusTerminal()
   }, [focusTerminal])
 
@@ -296,143 +264,141 @@ export function TerminalView({
   // ── Viewport resize (separate hook — stable, runs once on mount) ──
   useViewportResize(shellRef, processViewportResizeRef, () => focusTerminalInput(termRef.current))
 
-  // ── Terminal + keyboard setup ──
+  // ── Terminal init ──
   useEffect(() => {
-    if (!containerRef.current || USE_MOCK || !ghosttyReady) return
-    disposed.current = false
+    if (!containerRef.current) return
+    let cancelled = false
+    let term: WTerm | null = null
+    let cleanupKeyboard: (() => void) | null = null
+    let cleanupPaste: (() => void) | null = null
 
-    const term     = new Terminal(buildGhosttyOptions(terminalOptions))
-    const fitAddon = new FitAddon()
-    term.loadAddon(fitAddon)
-    term.open(containerRef.current)
-    term.registerLinkProvider(new UrlRegexProvider(term))
-    term.registerLinkProvider(new OSC8LinkProvider(term))
+    const run = async () => {
+      const { WTerm } = await import('@wterm/dom')
+      const core = await getGhosttyCore()
+      if (cancelled || !containerRef.current) return
 
-    fitAddon.fit()
-    const initialVp = measureTerminalFit(fitAddon)
-    setViewportSize(initialVp); viewportSizeRef.current = initialVp
+      term = new WTerm(containerRef.current, {
+        core,
+        autoResize: false,    // gmux owns resize decisions
+        cursorBlink: terminalOptions.cursorBlink,
+      })
 
-    termRef.current     = term
-    fitAddonRef.current = fitAddon
-    termIoRef.current   = createTerminalIO(term, {
-      getState() {
-        const scrollbackLen = term.getScrollbackLength()
-        const gvY           = Math.floor(term.getViewportY())
-        return { viewportY: scrollbackLen - gvY, baseY: scrollbackLen, rows: term.rows }
-      },
-      scrollToLine(line) {
-        const s = term.getScrollbackLength()
-        term.scrollToLine(s - line)
-      },
-      scrollToBottom() { term.scrollToBottom() },
-      getLine(y) {
-        const line = term.buffer.active.getLine(y)
-        if (!line) return null
-        const text = line.translateToString(true)
-        return text.trim().length < 4 ? null : text
-      },
-    })
+      applyWtermTheme(term.element, terminalOptions)
+      await term.init()
+      if (cancelled) { term.destroy(); return }
 
-    ;(window as any).__gmuxTerm = term
-    ;(window as any).__gmuxInject = (b64: string) => {
-      const bin = atob(b64)
-      const bytes = new Uint8Array(bin.length)
-      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
-      termIoRef.current?.enqueue(bytes, termEpochRef.current)
-    }
-    ;(window as any).__gmuxDiag = () => ({
-      ...syncDiagRef.current,
-      ghosttyScrollbackLines: term.getScrollbackLength(),
-    })
-
-    const sendRawInput = (data: string) => {
-      const ws = wsRef.current
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(new TextEncoder().encode(data))
-        termRef.current?.focus()
+      ;(window as any).__gmuxTerm = term
+      ;(window as any).__gmuxInject = (b64: string) => {
+        const bin = atob(b64)
+        const bytes = new Uint8Array(bin.length)
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+        termIoRef.current?.write(bytes, termEpochRef.current)
       }
-    }
+      ;(window as any).__gmuxDiag = () => ({
+        ...syncDiagRef.current,
+        scrollbackLines: term?.bridge?.getScrollbackCount() ?? 0,
+      })
 
-    const sendInput = (data: string) => {
-      if (ctrlArmedRef.current) {
-        const ctrlData = ctrlSequenceFor(data)
-        if (ctrlData) {
-          ctrlArmedRef.current = false
-          onCtrlConsumed()
-          sendRawInput(ctrlData)
-          return
+      // Scroll event — track scrolled-up state and emit diag
+      const handleScroll = () => {
+        if (!isActiveRef.current) return
+        const el = term!.element
+        const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 5
+        setScrolledUp(!atBottom)
+        emitSyncDiag({ scrollbackLines: term?.bridge?.getScrollbackCount() ?? 0 })
+      }
+      term.element.addEventListener('scroll', handleScroll, { passive: true })
+
+      const sendRawInput = (data: string) => {
+        const ws = wsRef.current
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(new TextEncoder().encode(data))
+          termRef.current?.focus()
+          // Clear any active text selection — it would otherwise persist
+          // visually because keystrokes go to the hidden wterm input, not
+          // the visible text spans that carry ::selection styling.
+          const sel = window.getSelection()
+          if (sel && !sel.isCollapsed) sel.removeAllRanges()
         }
       }
-      if (altArmedRef.current) {
-        altArmedRef.current = false
-        onAltConsumed()
-        sendRawInput('\x1b' + data)
-        return
+
+      const sendInput = (data: string) => {
+        if (ctrlArmedRef.current) {
+          const ctrlData = ctrlSequenceFor(data)
+          if (ctrlData) {
+            ctrlArmedRef.current = false
+            onCtrlConsumed()
+            sendRawInput(ctrlData)
+            return
+          }
+        }
+        if (altArmedRef.current) {
+          altArmedRef.current = false
+          onAltConsumed()
+          sendRawInput('\x1b' + data)
+          return
+        }
+        sendRawInput(data)
       }
-      sendRawInput(data)
-    }
 
-    // Store handler refs so the isActive effect can register/deregister them.
-    sendRawInputRef.current = sendRawInput
-    pasteActionRef.current  = () => {
-      void handlePasteAction({
-        sessionId:           session.id,
-        bracketedPasteMode:  term.hasBracketedPaste(),
-        feedback:            defaultPasteFeedback,
-        emit:                sendRawInput,
-      })
-    }
-    focusActionRef.current = () => focusTerminalInput(term)
-    copyActionRef.current  = () => {
-      if (term.hasSelection()) {
-        const text = selectionToText(term)
-        if (text) navigator.clipboard.writeText(text).catch(() => {})
-        term.clearSelection()
-      } else {
-        term.selectAll()
-        const text = selectionToText(term)
-        if (text) navigator.clipboard.writeText(text).catch(() => {})
+      term.onData = sendInput
+
+      termRef.current   = term
+      termIoRef.current = createTerminalIO(term)
+      setTermReady(true)
+
+      cleanupKeyboard = attachKeyboardHandler(term, sendInput, sendRawInput, keybinds, macCommandIsCtrl, session.id)
+      cleanupPaste    = attachPasteHandler(term, containerRef.current!, sendRawInput, session.id)
+
+      // Store handler refs so the isActive effect can register/deregister them.
+      sendRawInputRef.current = sendRawInput
+      pasteActionRef.current  = () => {
+        void handlePasteAction({
+          sessionId:           session.id,
+          bracketedPasteMode:  term!.bridge?.bracketedPaste() ?? false,
+          feedback:            defaultPasteFeedback,
+          emit:                sendRawInput,
+        })
+      }
+      focusActionRef.current = () => focusTerminalInput(term!)
+      copyActionRef.current  = () => {
+        const text = getSelectionText()
+        if (text) {
+          navigator.clipboard.writeText(text).catch(() => {})
+          clearSelection()
+        } else {
+          selectAllAndCopy(term!.element)
+        }
+      }
+
+      // Register if already active.
+      if (isActiveRef.current) {
+        onInputReady?.(sendRawInput)
+        onPasteReady?.(pasteActionRef.current)
+        onFocusReady?.(focusActionRef.current)
+        onCopyReady?.(copyActionRef.current)
+      }
+
+      const handleGlobalKeydown = (ev: KeyboardEvent) => {
+        if (!isActiveRef.current) return
+        const tag = (ev.target as HTMLElement)?.tagName
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+        if (containerRef.current?.contains(ev.target as Node)) return
+        term!.focus()
+      }
+      window.addEventListener('keydown', handleGlobalKeydown, true)
+
+      // Store cleanup for scroll listener and global keydown
+      ;(term as any).__gmuxScrollCleanup = () => {
+        term!.element.removeEventListener('scroll', handleScroll)
+        window.removeEventListener('keydown', handleGlobalKeydown, true)
       }
     }
 
-    // Blocker 2 fix: register immediately if already active.
-    if (isActiveRef.current) {
-      onInputReady?.(sendRawInput)
-      onPasteReady?.(pasteActionRef.current)
-      onFocusReady?.(focusActionRef.current)
-      onCopyReady?.(copyActionRef.current)
-    }
-
-    const dataDisposable       = term.onData(sendInput)
-    const disposeKeyboard      = attachKeyboardHandler(term, sendInput, sendRawInput, keybinds, macCommandIsCtrl, session.id)
-    const disposePaste         = attachPasteHandler(term, containerRef.current!, sendRawInput, session.id)
-    const disposeMobile        = attachMobileInputHandler(term, containerRef.current!, sendRawInput)
-
-    const scrollDisposable = term.onScroll(() => {
-      if (!isActiveRef.current) return
-      const gvY = Math.floor(term.getViewportY())
-      setScrolledUp(gvY > SCROLL_THRESHOLD)
-      emitSyncDiag({ ghosttyScrollbackLines: term.getScrollbackLength() })
-    })
-
-    const handleGlobalKeydown = (ev: KeyboardEvent) => {
-      if (!isActiveRef.current) return
-      const tag = (ev.target as HTMLElement)?.tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
-      if (containerRef.current?.contains(ev.target as Node)) return
-      term.focus()
-    }
-    window.addEventListener('keydown', handleGlobalKeydown, true)
+    run().catch(console.error)
 
     return () => {
-      disposed.current = true
-      window.removeEventListener('keydown', handleGlobalKeydown, true)
-      disposePaste()
-      disposeMobile()
-      disposeKeyboard()
-      dataDisposable.dispose()
-      scrollDisposable.dispose()
-      setScrolledUp(false)
+      cancelled = true
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current)
       wsRef.current?.close()
       wsRef.current = null
@@ -447,12 +413,15 @@ export function TerminalView({
       ;(window as any).__gmuxTerm   = null
       ;(window as any).__gmuxInject = null
       ;(window as any).__gmuxDiag   = null
-      term.dispose()
+      cleanupKeyboard?.()
+      cleanupPaste?.()
+      ;(term as any)?.__gmuxScrollCleanup?.()
+      term?.destroy()
       termRef.current    = null
-      fitAddonRef.current = null
       termIoRef.current  = null
+      setTermReady(false)
     }
-  }, [onCtrlConsumed, ghosttyReady])
+  }, [onCtrlConsumed]) // re-init only if fundamentally replaced
 
   // ── isActive: register/deregister callbacks + fit on activation ──
   useEffect(() => {
@@ -484,9 +453,9 @@ export function TerminalView({
 
   // ── WebSocket connection ──
   useWebSocket({
-    session, ghosttyReady,
+    session, ghosttyReady: termReady,
     termRef, termIoRef, wsRef, reconnectTimer, disposed, currentSessionId,
-    sessionRef, termEpochRef, savedScrollRef, reconnectCountRef,
+    sessionRef, termEpochRef, reconnectCountRef,
     ptySizeRef, viewportSizeRef,
     queueData, queueMany, queueResize,
     resetResizeEchoGate, releaseResizeEchoGate, fitAndResize, emitSyncDiag,
@@ -502,7 +471,6 @@ export function TerminalView({
     && ptySize != null && viewportSize != null
     && (viewportSize.cols !== ptySize.cols || viewportSize.rows !== ptySize.rows)
 
-  if (USE_MOCK) return <MockTerminal sessionId={session.id} />
 
   return (
     <div
@@ -531,7 +499,10 @@ export function TerminalView({
         <button
           type="button"
           class="terminal-scroll-end"
-          onClick={() => termRef.current?.scrollToBottom()}
+          onClick={() => {
+            const el = termRef.current?.element
+            if (el) el.scrollTop = el.scrollHeight
+          }}
           title="Scroll to bottom"
         >
           End ↓
@@ -541,62 +512,3 @@ export function TerminalView({
   )
 }
 
-// ── MockTerminal ──
-
-/** Read-only ghostty-web Terminal showing pre-baked ANSI content for mock/demo mode. */
-export function MockTerminal({ sessionId }: { sessionId: string }) {
-  const containerRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    if (!containerRef.current) return
-    let cancelled = false
-    let cleanup: (() => void) | null = null
-
-    ghosttyInitPromise.then(() => {
-      if (cancelled || !containerRef.current) return
-
-      const term = new Terminal({
-        theme:        TERM_THEME,
-        fontFamily:   "'Fira Code', monospace",
-        fontSize:     13,
-        disableStdin: true,
-        cursorBlink:  false,
-      })
-      const fit = new FitAddon()
-      term.loadAddon(fit)
-      term.open(containerRef.current)
-      fit.fit()
-
-      const mock = MOCK_BY_ID[sessionId]
-      if (mock?.terminal) {
-        term.write(mock.terminal.replace(/\r?\n/g, '\r\n'), () => {
-          if (mock.cursorX != null && mock.cursorY != null) {
-            term.write(`\x1b[${mock.cursorY + 1};${mock.cursorX + 1}H`)
-          }
-        })
-      }
-
-      ;(window as any).__gmuxTerm = term
-      const onResize = () => fit.fit()
-      window.addEventListener('resize', onResize)
-
-      cleanup = () => {
-        window.removeEventListener('resize', onResize)
-        if ((window as any).__gmuxTerm === term) (window as any).__gmuxTerm = null
-        term.dispose()
-      }
-      if (cancelled) cleanup()
-    })
-
-    return () => {
-      cancelled = true
-      cleanup?.()
-    }
-  }, [sessionId])
-
-  return (
-    <div class="terminal-shell">
-      <div ref={containerRef} class="terminal-container" />
-    </div>
-  )
-}

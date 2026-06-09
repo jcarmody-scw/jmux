@@ -1,6 +1,8 @@
 /* gmux — session orchestration UI */
 
 @import './fonts.css';
+@import '@wterm/dom/css';
+
 
 code {
   font-family: 'Fira Code', monospace;
@@ -122,7 +124,7 @@ body {
 /* File tree pane: takes remaining space */
 .sidebar-files-pane {
   flex: 1 1 0;
-  min-height: 0;
+  min-height: 80px;
   overflow-y: auto;
   overflow-x: hidden;
   display: flex;
@@ -343,10 +345,10 @@ body {
 .folder-sessions.folder-sessions-tabs {
   display: flex;
   flex-direction: row;
-  flex-wrap: wrap;
-  gap: 4px;
+  flex-wrap: nowrap;
+  gap: 3px;
   padding: 6px 8px;
-  overflow: visible;
+  overflow: hidden;
 }
 
 /* ── Session Item ── */
@@ -558,9 +560,6 @@ body {
   color: var(--text);
 }
 
-/* Mock mode (landing page screenshots): hide per-session close buttons */
-.mock-mode .session-close-btn,
-.mock-mode .session-card-close { display: none; }
 
 /* Session drag-to-reorder */
 .session-item.session-dragging {
@@ -574,13 +573,15 @@ body {
 .session-item.session-item-tab {
   display: inline-flex;
   align-items: center;
+  flex: 1 1 0;
+  min-width: 40px;
+  max-width: 140px;
   gap: 4px;
   padding: 3px 6px 3px 6px;
   border-radius: 5px;
   border: 1px solid var(--border);
   font-size: 11.5px;
   white-space: nowrap;
-  max-width: 140px;
   position: relative;
   overflow: hidden;
 }
@@ -1177,7 +1178,7 @@ body {
   flex-shrink: 0;
   background: var(--bg-sidebar);
   border-bottom: 1px solid var(--border);
-  overflow-x: auto;
+  overflow-x: hidden;
   overflow-y: hidden;
   scrollbar-width: none;
 }
@@ -1188,9 +1189,9 @@ body {
   align-items: center;
   gap: 5px;
   padding: 0 10px 0 10px;
-  min-width: 80px;
+  flex: 1 1 0;
+  min-width: 40px;
   max-width: 200px;
-  flex-shrink: 0;
   border-right: 1px solid var(--border);
   cursor: pointer;
   text-decoration: none;
@@ -1513,7 +1514,7 @@ body {
   flex: 1;
   min-height: 0;
   position: relative;
-  overflow: auto;
+  overflow: hidden;
   background: #0f141a;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
@@ -1676,20 +1677,49 @@ body {
        url('@fontsource/jetbrains-mono/files/jetbrains-mono-latin-500-italic.woff2') format('woff2');
 }
 
-.terminal-container .xterm {
+.terminal-container.wterm {
   width: max-content;
   min-width: 100%;
-  min-height: 100%;
+  height: 100%;
   padding: 0 6px 6px 6px;
   margin: 0 auto; /* center the character grid horizontally */
+  border-radius: 0;
+  box-shadow: none;
 }
 
-/* Hide xterm's native scrollbar — scrollback is handled by the PTY replay buffer */
-/* Override viewport background — xterm sets it to black inline before theme applies */
-.terminal-container .xterm-viewport {
-  overflow-y: hidden !important;
-  background-color: transparent !important;
+/* wterm's renderer sets the .term-grid container's inline background to the
+   bottom-right cell's colour (a heuristic for apps that paint a uniform
+   full-screen background). TUIs like pi colour their footer/status bottom
+   line, so that single cell's colour bleeds across the whole terminal behind
+   the otherwise-transparent rows. Force the grid container transparent so it
+   inherits the terminal background; real per-row/per-cell backgrounds still
+   paint normally. */
+.terminal-container.wterm .term-grid {
+  background: transparent !important;
 }
+
+/* wterm's renderer sets rowEl.style.background on each row based on the last
+   cell's colour (same heuristic as the grid-level background above). Clear it
+   so the row never floods with a single cell's colour; individual <span> cells
+   still paint their own backgrounds.
+   Do NOT clear box-shadow: the renderer uses `0 1px 0 <bgColor>` to fill the
+   sub-pixel gap between rows. Removing it creates thin visible lines. */
+.terminal-container.wterm .term-row {
+  background: transparent !important;
+}
+
+/* Style wterm's own scrollbar (shown when scrollback content exists). */
+.terminal-container.wterm {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+.terminal-container.wterm::-webkit-scrollbar { width: 6px; height: 6px; }
+.terminal-container.wterm::-webkit-scrollbar-track { background: transparent; }
+.terminal-container.wterm::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 3px;
+}
+
 
 /* ── Empty State ── */
 
@@ -1965,9 +1995,10 @@ a.home-host-link:hover {
     font-size: 11px;
   }
 
-  .terminal-container .xterm {
+  .terminal-container.wterm {
     padding: 0 4px 4px;
   }
+
 
   .session-item {
     padding: 8px 10px 8px 14px;
@@ -2148,11 +2179,10 @@ a.home-host-link:hover {
      unable to select any text.  On coarse-pointer devices we switch to the
      DOM renderer (so text lives in real <span> nodes) and override the
      user-select rule so Android/iOS can reach those nodes. */
-  .terminal-container .xterm,
-  .terminal-container .xterm-rows,
-  .terminal-container .xterm-screen {
-    user-select: text !important;
-    -webkit-user-select: text !important;
+  /* wterm uses DOM rendering natively — text is always selectable. */
+  .terminal-container.wterm {
+    user-select: text;
+    -webkit-user-select: text;
   }
 }
 
@@ -2258,9 +2288,10 @@ a.home-host-link:hover {
   overflow: hidden;
 }
 
-.diag-terminal .xterm {
+.diag-terminal.wterm {
   padding: 6px 8px;
 }
+
 
 .diag-log-section {
   flex: 1;
@@ -2711,7 +2742,8 @@ a.home-host-link:hover {
 /* @pierre/trees mount container — fills tree zone, applies theme vars */
 .ft-tree-inner {
   height: 100%;
-  display: block;
+  display: flex;
+  flex-direction: column;
   /* Layout overrides */
   --trees-bg-override: var(--bg-sidebar);
   --trees-fg-override: var(--text);
@@ -2720,7 +2752,13 @@ a.home-host-link:hover {
   --trees-accent-override: var(--accent);
   --trees-border-radius-override: var(--radius);
   --trees-font-family-override: 'Source Sans 3', system-ui, sans-serif;
-  --trees-font-size-override: 13px;
+  --trees-font-size-override: 13.5px;
+  /* Compact density: tighter indent, smaller icons, less padding */
+  --trees-item-height: 24px;
+  --trees-level-gap-override: 10px;
+  --trees-icon-width-override: 13px;
+  --trees-item-padding-x-override: 6px;
+  --trees-item-margin-x-override: 1px;
   --trees-input-bg-override: var(--bg-surface);
   --trees-border-color-override: var(--border);
   --trees-scrollbar-thumb-override: var(--border-strong);
@@ -2732,6 +2770,12 @@ a.home-host-link:hover {
   --trees-git-untracked-color-override: var(--text-secondary);
   --trees-git-renamed-color-override: oklch(72% 0.12 55);
   --trees-git-ignored-color-override: var(--text-muted);
+}
+
+/* Make the @pierre/trees host element fill the container */
+.ft-tree-inner > file-tree-container {
+  flex: 1;
+  min-height: 0;
 }
 
 /* Context menu rendered by @pierre/trees composition.contextMenu.render() */
@@ -3122,8 +3166,7 @@ a.home-host-link:hover {
 }
 .diff-panel-body {
   flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow: auto;
 }
 .diff-panel-state {
   padding: 32px;
@@ -3137,6 +3180,240 @@ a.home-host-link:hover {
 .diff-files {
   padding: 8px 0;
 }
+.diff-file-wrapper {
+  margin-bottom: 4px;
+}
+.diff-file-collapse-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 12px;
+  background: var(--bg-surface);
+  border: none;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  text-align: left;
+  font-family: 'Source Sans 3', sans-serif;
+  font-size: 12px;
+  color: var(--text-muted);
+  transition: background 0.1s, color 0.1s;
+  user-select: none;
+}
+.diff-file-collapse-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.diff-file-collapse-chevron {
+  flex-shrink: 0;
+  font-size: 9px;
+  opacity: 0.6;
+}
+.diff-file-collapse-name {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
 .diff-file-container {
   margin-bottom: 16px;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   PiSessionView — terminal-style chat for pi-sdk sessions
+   ──────────────────────────────────────────────────────────────────────── */
+
+.pi-session {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  background: var(--bg);
+  font-family: 'Fira Code', monospace;
+  font-size: 13px;
+  color: var(--text);
+}
+
+/* Message list */
+.pi-session-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Shared item base */
+.pi-session-item {
+  line-height: 1.55;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+/* User prompt */
+.pi-session-item-user {
+  color: var(--text-secondary);
+}
+
+.pi-session-prompt-prefix {
+  color: var(--text-muted);
+  user-select: none;
+}
+
+/* Assistant text */
+.pi-session-text {
+  color: var(--text);
+}
+
+/* Streaming cursor */
+.pi-session-cursor {
+  display: inline-block;
+  color: var(--accent);
+  animation: pi-blink 1s step-end infinite;
+}
+@keyframes pi-blink {
+  50% { opacity: 0; }
+}
+
+/* Thinking block */
+.pi-session-thinking {
+  margin: 4px 0;
+}
+.pi-session-thinking-toggle {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-family: 'Fira Code', monospace;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+  opacity: 0.6;
+}
+.pi-session-thinking-toggle:hover {
+  opacity: 1;
+}
+.pi-session-thinking-body {
+  color: var(--text-muted);
+  font-size: 12px;
+  padding-left: 16px;
+  opacity: 0.7;
+  white-space: pre-wrap;
+  margin-top: 2px;
+}
+
+/* Tool block */
+.pi-session-tool {
+  margin: 6px 0;
+  color: var(--text-secondary);
+}
+.pi-session-tool-header {
+  color: var(--accent);
+  opacity: 0.8;
+}
+.pi-session-tool-args {
+  color: var(--text-muted);
+  opacity: 0.75;
+}
+.pi-session-tool-output {
+  color: var(--text);
+  opacity: 0.9;
+}
+.pi-session-tool-footer {
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+.pi-session-tool-done {
+  color: var(--status-connected);
+  opacity: 0.85;
+}
+.pi-session-tool-error {
+  color: var(--status-error);
+  opacity: 0.9;
+}
+
+/* System items */
+.pi-session-item-system {
+  font-style: italic;
+  color: var(--text-muted);
+  opacity: 0.75;
+}
+.pi-session-item-system-ready {
+  color: var(--status-connected);
+  opacity: 0.8;
+}
+.pi-session-item-system-error {
+  color: var(--status-error);
+  opacity: 1;
+  font-style: normal;
+  font-weight: 500;
+}
+.pi-session-item-system-warning {
+  color: oklch(78% 0.12 75);
+  opacity: 0.85;
+}
+
+/* Input bar */
+.pi-session-input-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: var(--bg-surface);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.pi-session-input {
+  flex: 1;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-family: 'Fira Code', monospace;
+  font-size: 13px;
+  padding: 6px 10px;
+  outline: none;
+}
+.pi-session-input:focus {
+  border-color: var(--accent);
+}
+.pi-session-input::placeholder {
+  color: var(--text-muted);
+  opacity: 0.5;
+}
+.pi-session-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.pi-session-abort-btn {
+  background: none;
+  border: 1px solid var(--status-error);
+  color: var(--status-error);
+  font-family: 'Fira Code', monospace;
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.pi-session-abort-btn:hover {
+  background: oklch(18% 0.04 25);
+}
+
+.pi-session-ws-state {
+  font-size: 11px;
+  font-family: 'Fira Code', monospace;
+  flex-shrink: 0;
+}
+.pi-session-ws-state-connecting {
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+.pi-session-ws-state-lost {
+  color: var(--status-error);
 }

@@ -26,6 +26,7 @@ import {
   editorTheme,
   tableField,
   imageField,
+  codeBlockField,
   collapseOnSelectionFacet,
   mouseSelectingField,
   setMouseSelecting,
@@ -144,6 +145,13 @@ const gmuxTheme = EditorView.theme({
     fontFamily: "'Lora', Georgia, serif",
     fontSize: '15px',
     height: '100%',
+    // Bridge editorTheme's CSS-variable colour references to gmux's dark palette.
+    // editorTheme uses hsl(var(--foreground/--muted/--primary)) with light-mode
+    // fallbacks; we map them to equivalent HSL values for our dark theme.
+    '--foreground': '220 10% 90%',    // near-white, maps to oklch(90% 0.01 250)
+    '--muted': '220 15% 18%',         // dark surface for code/muted bg
+    '--primary': '185 55% 60%',       // accent (teal-ish)
+    '--md-heading': '220 10% 92%',    // headings — slightly brighter than body
   },
   '.cm-scroller': {
     fontFamily: "'Lora', Georgia, serif",
@@ -167,13 +175,26 @@ const gmuxTheme = EditorView.theme({
     backgroundColor: 'var(--selection-bg, rgba(99,179,237,0.25))',
   },
   '.cm-gutters': { display: 'none' },
-  // Heading sizes (markdownStylePlugin applies cm-heading-N classes)
-  '.cm-heading-1': { fontSize: '1.8em', fontWeight: '700', fontFamily: "'Instrument Sans', sans-serif", lineHeight: '1.3' },
-  '.cm-heading-2': { fontSize: '1.4em', fontWeight: '600', fontFamily: "'Instrument Sans', sans-serif", lineHeight: '1.3' },
-  '.cm-heading-3': { fontSize: '1.15em', fontWeight: '600', fontFamily: "'Instrument Sans', sans-serif", lineHeight: '1.3' },
+  // Heading sizes — gmuxTheme runs after editorTheme so these win.
+  // markdownStylePlugin applies .cm-heading-N; editorTheme adds .cm-header-N.
+  // Both selectors need an explicit color or they fall back to the package's
+  // near-black hsl(220 9% 9%) default which is invisible on dark bg.
+  '.cm-heading-1': { fontSize: '1.8em', fontWeight: '700', fontFamily: "'Instrument Sans', sans-serif", lineHeight: '1.3', color: 'var(--text)' },
+  '.cm-heading-2': { fontSize: '1.4em', fontWeight: '600', fontFamily: "'Instrument Sans', sans-serif", lineHeight: '1.3', color: 'var(--text)' },
+  '.cm-heading-3': { fontSize: '1.15em', fontWeight: '600', fontFamily: "'Instrument Sans', sans-serif", lineHeight: '1.3', color: 'var(--text)' },
+  // editorTheme uses cm-header-N (not cm-heading-N) — override colour here too
+  '.cm-header-1': { color: 'var(--text)' },
+  '.cm-header-2': { color: 'var(--text)' },
+  '.cm-header-3': { color: 'var(--text)' },
+  '.cm-header-4, .cm-header-5, .cm-header-6': { color: 'var(--text)' },
+  // Inline bold/italic — editorTheme defaults to near-black hsl(220 9% 9%)
+  '.cm-strong': { color: 'var(--text)' },
+  '.cm-emphasis': { color: 'var(--text)' },
+  '.cm-strikethrough': { color: 'var(--text-muted)' },
   // Inline code
   '.cm-inline-code': {
     background: 'var(--bg-selected)',
+    color: 'var(--text)',
     borderRadius: '3px',
     fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
     fontSize: '0.88em',
@@ -182,12 +203,18 @@ const gmuxTheme = EditorView.theme({
   // Block code
   '.cm-code-block': {
     background: 'var(--bg-selected)',
+    color: 'var(--text)',
     borderRadius: 'var(--radius)',
     fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
     fontSize: '0.88em',
     lineHeight: '1.55',
     padding: '14px 18px',
     display: 'block',
+  },
+  // Override the package's light-mode .cm-code rule (bg hsl(220 14% 96%))
+  '.cm-code': {
+    background: 'var(--bg-selected)',
+    color: 'var(--text)',
   },
   // Blockquote
   '.cm-blockquote': {
@@ -197,14 +224,40 @@ const gmuxTheme = EditorView.theme({
   },
   // Links
   '.cm-link': { color: 'var(--accent, oklch(65% 0.18 250))' },
-  // Tables (rendered by tableField)
-  '.cm-table-wrapper table': { borderCollapse: 'collapse', width: '100%', margin: '0.8em 0', fontSize: '14px' },
-  '.cm-table-wrapper th': {
+  '.cm-wikilink': { color: 'var(--accent, oklch(65% 0.18 250))' },
+  // Tables — editorTheme uses .cm-table-widget/.cm-table-editor (not .cm-table-wrapper)
+  '.cm-table-widget table': { borderCollapse: 'collapse', width: '100%', margin: '0.8em 0', fontSize: '14px' },
+  '.cm-table-widget th': {
     background: 'var(--bg-selected)', fontFamily: "'Instrument Sans', sans-serif",
     fontWeight: '600', fontSize: '0.9em', padding: '6px 10px', textAlign: 'left',
-    border: '1px solid var(--border)',
+    border: '1px solid var(--border)', color: 'var(--text)',
   },
-  '.cm-table-wrapper td': { padding: '6px 10px', border: '1px solid var(--border)' },
+  '.cm-table-widget td': { padding: '6px 10px', border: '1px solid var(--border)', color: 'var(--text)' },
+  '.cm-table-editor table': { borderCollapse: 'collapse', width: '100%', margin: '0.8em 0', fontSize: '14px' },
+  '.cm-table-editor th': {
+    background: 'var(--bg-selected)', fontFamily: "'Instrument Sans', sans-serif",
+    fontWeight: '600', fontSize: '0.9em', padding: '6px 10px', textAlign: 'left',
+    border: '1px solid var(--border)', color: 'var(--text)',
+  },
+  '.cm-table-editor td': { padding: '6px 10px', border: '1px solid var(--border)', color: 'var(--text)' },
+  '.cm-table-toggle': { background: 'var(--bg-surface)', color: 'var(--text)', border: '1px solid var(--border)' },
+  // Code block widget (codeBlockField)
+  '.cm-codeblock-widget': {
+    background: 'var(--bg-selected, oklch(20% 0.02 250))',
+    borderRadius: '6px',
+    margin: '4px 0',
+    overflow: 'hidden',
+    fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+    fontSize: '0.88em',
+    lineHeight: '1.55',
+    display: 'block',
+  },
+  '.cm-codeblock-line': { padding: '2px 16px', display: 'block', color: 'var(--text)' },
+  '.cm-codeblock-fence': { color: 'var(--text-muted, oklch(55% 0 0))', padding: '6px 16px' },
+  '.cm-codeblock-copy': {
+    background: 'var(--bg-surface)', color: 'var(--text-muted)', border: '1px solid var(--border)',
+    borderRadius: '4px', fontSize: '11px', padding: '2px 8px', cursor: 'pointer',
+  },
 }, { dark: true })
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -319,6 +372,7 @@ export function MarkdownEditor({ projectSlug, filePath }: MarkdownEditorProps) {
           livePreviewPlugin,                   // hide markers on unfocused lines
           markdownStylePlugin,                 // heading sizes, bold/italic styles
           tableField,                          // GFM tables → HTML
+          codeBlockField(),                    // fenced code blocks → highlighted widget
           imageField(),                        // inline image previews
           editorTheme,                         // package default animations
           // App theme override

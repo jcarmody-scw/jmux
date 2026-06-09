@@ -5,6 +5,7 @@ import './styles.css'
 
 import { ReplayView } from './replay-view'
 import { TerminalView, type SyncDiag } from './terminal'
+import { PiSessionView, isPiSDKSession } from './pi-session'
 import { useArrivalPulse } from './use-arrival-pulse'
 import { Sidebar, sessionDotState, sessionEnvironmentIcon, type SessionListLayout, LAYOUT_KEY, loadLayout } from './sidebar'
 import type { DotState } from './store'
@@ -18,7 +19,7 @@ import { LaunchButton } from './launcher'
 import { MarkdownEditor } from './markdown-editor'
 import { ImageViewer } from './image-viewer'
 import { DiffPanel } from './diff-panel'
-import { installCopySession } from './mock-data/export-session'
+
 
 import {
   sessions, connState, selected, selectedId, view, health, peers,
@@ -36,13 +37,8 @@ const InputDiagnostics = lazy(() => import('./input-diagnostics'))
 
 // ── Config ──
 
-const USE_MOCK = import.meta.env.VITE_MOCK === '1' || location.search.includes('mock')
 
-// Mock mode: hide close buttons and other interactive chrome via CSS.
-if (USE_MOCK) document.documentElement.classList.add('mock-mode')
-
-// Debug: __gmuxCopySession() in devtools console
-installCopySession()
+// Debug: __gmuxCopySession() removed (export-session.ts deleted in wterm migration)
 
 // ── Components ──
 
@@ -196,7 +192,12 @@ function SessionTabBar({
           </a>
         )
       })}
-      <LaunchButton className="session-tab-add" />
+      <LaunchButton
+        className="session-tab-add"
+        sessions={allSessions.map(({ session }) => session)}
+        selectedId={selId}
+        fallbackCwd=""
+      />
     </div>
   )
 }
@@ -290,7 +291,7 @@ function SessionMenu({ session, onRestart, syncDiag }: {
               <span class="session-menu-value">{session.peer}</span>
             </div>
           )}
-          {syncDiag && (syncDiag.prefetchBytes > 0 || syncDiag.ghosttyScrollbackLines > 0) && (
+          {syncDiag && (syncDiag.prefetchBytes > 0 || syncDiag.scrollbackLines > 0) && (
             <>
               <div class="session-menu-divider" />
               <div class="session-menu-section-title">Scrollback</div>
@@ -304,8 +305,8 @@ function SessionMenu({ session, onRestart, syncDiag }: {
               )}
               <div class="session-menu-row">
                 <span class="session-menu-label">Buffer</span>
-                <span class={`session-menu-value${syncDiag.ghosttyScrollbackLines >= syncDiag.ghosttyScrollbackLimit * 0.95 ? ' stale' : ''}`}>
-                  {fmtNum(syncDiag.ghosttyScrollbackLines)} / {fmtNum(syncDiag.ghosttyScrollbackLimit)} lines
+                <span class={`session-menu-value${syncDiag.scrollbackLines >= syncDiag.scrollbackLimit * 0.95 ? ' stale' : ''}`}>
+                  {fmtNum(syncDiag.scrollbackLines)} / {fmtNum(syncDiag.scrollbackLimit)} lines
                 </span>
               </div>
             </>
@@ -601,12 +602,13 @@ function App() {
     return () => clearTimeout(t)
   }, [resumingId])
 
-  const canAttach = !!selectedVal?.alive && (!!selectedVal?.socket_path || !!selectedVal?.peer) && !USE_MOCK
+  const canAttach = !!selectedVal?.alive && (!!selectedVal?.socket_path || !!selectedVal?.peer)
+  const canAttachPiSDK = !!selectedVal?.alive && isPiSDKSession(selectedVal)
 
   // Track which sessions have live TerminalView instances.
   // Mutating the ref during render is safe: the update is visible in the
   // same render pass, before the terminal stack JSX is evaluated below.
-  if (selId && selectedVal?.alive && (canAttach || USE_MOCK)) {
+  if (selId && selectedVal?.alive && canAttach && !isPiSDKSession(selectedVal)) {
     openedSessionIdsRef.current.add(selId)
   }
   const terminalSessions = (termOpts && keybindsVal)
@@ -614,6 +616,14 @@ function App() {
     : []
   // The active view is a live terminal if it's in the opened set.
   const activeIsTerminal = !!selectedVal?.alive && openedSessionIdsRef.current.has(selectedVal.id)
+
+  // Track which sessions have live PiSessionView instances.
+  const openedPiSessionIdsRef = useRef(new Set<string>())
+  if (selId && canAttachPiSDK) {
+    openedPiSessionIdsRef.current.add(selId)
+  }
+  const piSdkSessions = sessionsVal.filter(s => s.alive && openedPiSessionIdsRef.current.has(s.id))
+  const activeIsPiSDK = !!selectedVal?.alive && openedPiSessionIdsRef.current.has(selectedVal.id)
 
   // Clear modifiers when terminal isn't attachable.
   useEffect(() => {
@@ -750,9 +760,18 @@ function App() {
           />
         ))}
 
-        {/* Non-terminal overlay: shown when the active view isn't a live terminal */}
-        {!activeIsTerminal && (
-          selectedVal && !selectedVal.alive && termOpts && !USE_MOCK ? (
+        {/* Persistent pi-sdk session stack: one PiSessionView per opened pi-sdk session. */}
+        {piSdkSessions.map(s => (
+          <PiSessionView
+            key={s.id}
+            session={s}
+            isActive={s.id === selId}
+          />
+        ))}
+
+        {/* Non-terminal overlay: shown when the active view isn't a live terminal or pi-sdk session */}
+        {!activeIsTerminal && !activeIsPiSDK && viewVal?.kind !== 'diff-viewer' && viewVal?.kind !== 'markdown-editor' && viewVal?.kind !== 'image-viewer' && (
+          selectedVal && !selectedVal.alive && termOpts ? (
             <ReplayView
               session={selectedVal}
               terminalOptions={termOpts}

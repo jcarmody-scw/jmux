@@ -58,8 +58,30 @@ messages directly. Rules that follow from this:
   Discord announcement falls back to the auto-generated bullet list
   so subscribers can still see what changed without clicking through.
 
+## Manual verification
+
+Call `gmux_verify` with the right scenario — it starts the dev stack if needed,
+finds the project slug, authenticates the browser, and navigates.
+
+| Scenario | `scenario` arg |
+|---|---|
+| UI / React / CSS only; no Go changes | `frontend` |
+| Any `.go` file changed | `full` |
+| Reproduce a bug in production, or verify after `just install` | `prod` |
+
+Default to `frontend`. Use `full` only when Go source has changed.
+
+```
+gmux_verify({ scenario: "frontend", route: "sessions" })
+```
+
+For automated E2E tests, see `docs/e2e.md`. The Playwright suite manages its own
+isolated daemon — do not mix it with the manual verification setups above.
 ## Other rules
 
 - Push changes and create pull requests. Don't commit directly to
   `main`.
+- **Never open a PR against `gmuxapp/gmux` (the upstream repo).** Always
+  use the fork remote (`fork`, `https://github.com/jcarmody-scw/jmux.git`)
+  and target its `main` branch: `gh pr create --repo jcarmody-scw/jmux --base main`.
 - Use `./scripts/install.sh` when asked to install locally.

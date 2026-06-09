@@ -9,7 +9,7 @@
  * [session.id, ghosttyReady].
  */
 import { useEffect } from 'preact/hooks'
-import type { Terminal } from 'ghostty-web'
+import type { WTerm } from '@wterm/dom'
 import { createReplayBuffer } from './replay'
 import { fetchScrollback } from './replay-fetch'
 import { createTerminalIO, type TerminalSize } from './terminal-io'
@@ -27,7 +27,7 @@ export interface UseWebSocketOptions {
   session: Session
   ghosttyReady: boolean
   // Refs
-  termRef:           Ref<Terminal | null>
+  termRef:           Ref<WTerm | null>
   termIoRef:         Ref<ReturnType<typeof createTerminalIO> | null>
   wsRef:             Ref<WebSocket | null>
   reconnectTimer:    Ref<ReturnType<typeof setTimeout> | null>
@@ -35,7 +35,6 @@ export interface UseWebSocketOptions {
   currentSessionId:  Ref<string>
   sessionRef:        Ref<Session>
   termEpochRef:      Ref<number>
-  savedScrollRef:    Ref<Map<string, number>>
   reconnectCountRef: Ref<number>
   ptySizeRef:        Ref<TerminalSize | null>
   viewportSizeRef:   Ref<TerminalSize | null>
@@ -60,7 +59,7 @@ export function useWebSocket(opts: UseWebSocketOptions): void {
   const {
     session, ghosttyReady,
     termRef, termIoRef, wsRef, reconnectTimer, disposed, currentSessionId,
-    sessionRef, termEpochRef, savedScrollRef, reconnectCountRef,
+    sessionRef, termEpochRef, reconnectCountRef,
     ptySizeRef, viewportSizeRef,
     queueData, queueMany, queueResize,
     resetResizeEchoGate, releaseResizeEchoGate, fitAndResize, emitSyncDiag,
@@ -78,9 +77,7 @@ export function useWebSocket(opts: UseWebSocketOptions): void {
     termEpochRef.current = epoch
     termIoRef.current.reset(epoch)
 
-    // Consume any saved scroll position for this session.
-    const savedGvY = Math.floor(savedScrollRef.current.get(session.id) ?? 0)
-    savedScrollRef.current.delete(session.id)
+
 
     resetResizeEchoGate()
     setPtySize(null);     ptySizeRef.current     = null
@@ -91,7 +88,7 @@ export function useWebSocket(opts: UseWebSocketOptions): void {
       syncPhase: 'idle', scrollbackBytes: 0, scrollbackMsgs: 0,
       syncStartedAt: null, syncEndedAt: null, pendingWrite: false,
       wsState: 'connecting', reconnects: 0, prefetchBytes: 0,
-      ghosttyScrollbackLines: 0, ghosttyScrollbackLimit: scrollbackLimit,
+      scrollbackLines: 0, scrollbackLimit: scrollbackLimit,
     })
     setTermLoading(true)
 
@@ -103,18 +100,20 @@ export function useWebSocket(opts: UseWebSocketOptions): void {
         wsRef.current = null
       }
 
-      termIoRef.current?.forceNextScrollToBottom()
+      // wterm auto-scrolls to bottom; no forceNextScrollToBottom needed.
       emitSyncDiag({ syncPhase: 'waiting', wsState: 'connecting' })
 
       const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
 
       // Strategy:
-      //   Live sessions:  WS snapshot includes CSI_3J + renderScreen() — full scrollback.
+      //   Live sessions:  prefetch on-disk scrollback, open WS with ?no_erase=1 so the
+      //                  snapshot does not send ESC[3J (which would wipe prefetched lines).
       //   Dead sessions:  prefetch from on-disk file (ExtractBytes); WS will fail.
-      //   Reconnects:     simple WS snapshot — scrollback already in host buffer.
-      const openWs = (prefetchBarrier?: Promise<void>) => {
+      //   Reconnects:     simple WS snapshot — in-memory scrollback survives reconnect.
+      const openWs = (prefetchBarrier?: Promise<void>, noErase = false) => {
         if (disposed.current || currentSessionId.current !== session.id) return
-        const url = `${wsProtocol}//${location.host}/ws/${session.id}`
+        const params = noErase ? '?no_erase=1' : ''
+        const url = `${wsProtocol}//${location.host}/ws/${session.id}${params}`
         const ws = new WebSocket(url)
         wireWs(ws, prefetchBarrier)
       }
@@ -127,54 +126,62 @@ export function useWebSocket(opts: UseWebSocketOptions): void {
       // Clear the old session's buffer immediately (termLoading overlay hides the flash).
       queueData(new TextEncoder().encode('\x1b[3J\x1b[2J\x1b[H'))
 
-      if (session.alive) {
-        openWs()
-        return
-      }
+      // Live and dead sessions both prefetch the on-disk scrollback file so the
+      // user can scroll back to the start of the session. Live sessions open the
+      // WS with ?no_erase=1 so the snapshot does not wipe the prefetched content.
+      // Dead sessions use a plain WS (which will fail/close immediately — that's fine).
+      // Do not cache live-session prefetch: the file is still growing.
+      {
+        let prefetchResolve!: () => void
+        const prefetchBarrier = new Promise<void>(resolve => { prefetchResolve = resolve })
+        const prefetchSessionId = session.id
 
-      // Dead session: prefetch from on-disk scrollback file.
-      // Cache is safe: the file doesn't change once the session has exited.
-      let prefetchResolve!: () => void
-      const prefetchBarrier = new Promise<void>(resolve => { prefetchResolve = resolve })
-      const prefetchSessionId = session.id
-
-      const injectPrefetch = (extracted: Uint8Array) => {
-        emitSyncDiag({ prefetchBytes: extracted.length })
-        if (extracted.length > 0) {
-          queueData(extracted)
-          const rows = termRef.current?.rows ?? 24
-          queueData(new TextEncoder().encode('\r\n'.repeat(rows)))
+        const injectPrefetch = (extracted: Uint8Array) => {
+          emitSyncDiag({ prefetchBytes: extracted.length })
+          if (extracted.length > 0) {
+            queueData(extracted)
+            const rows = termRef.current?.rows ?? 24
+            queueData(new TextEncoder().encode('\r\n'.repeat(rows)))
+          }
         }
-      }
 
-      const cached = prefetchCache.get(prefetchSessionId)
-      if (cached !== undefined) {
-        if (cached !== null) injectPrefetch(cached)
-        prefetchResolve()
-      } else {
-        fetchScrollback(prefetchSessionId).then(result => {
-          if (disposed.current || currentSessionId.current !== prefetchSessionId) {
+        if (!session.alive) {
+          // Dead session: safe to cache (file no longer changes).
+          const cached = prefetchCache.get(prefetchSessionId)
+          if (cached !== undefined) {
+            if (cached !== null) injectPrefetch(cached)
             prefetchResolve()
-            return
+          } else {
+            fetchScrollback(prefetchSessionId).then(result => {
+              if (disposed.current || currentSessionId.current !== prefetchSessionId) {
+                prefetchResolve(); return
+              }
+              if (result.kind === 'bytes') {
+                const extracted = result.bytes
+                prefetchCache.set(prefetchSessionId, extracted.length > 0 ? extracted : null)
+                injectPrefetch(extracted)
+              } else if (result.kind === 'empty' || result.kind === 'not-found') {
+                prefetchCache.set(prefetchSessionId, null)
+              }
+              // error: don't cache so next visit retries
+              prefetchResolve()
+            }).catch(() => prefetchResolve())
           }
-          if (result.kind === 'bytes') {
-            const extracted = result.bytes
-            emitSyncDiag({ prefetchBytes: extracted.length })
-            prefetchCache.set(prefetchSessionId, extracted.length > 0 ? extracted : null)
-            if (extracted.length > 0) {
-              queueData(extracted)
-              const rows = termRef.current?.rows ?? 24
-              queueData(new TextEncoder().encode('\r\n'.repeat(rows)))
+        } else {
+          // Live session: always fetch fresh (file is still growing).
+          fetchScrollback(prefetchSessionId).then(result => {
+            if (disposed.current || currentSessionId.current !== prefetchSessionId) {
+              prefetchResolve(); return
             }
-          } else if (result.kind === 'empty' || result.kind === 'not-found') {
-            prefetchCache.set(prefetchSessionId, null)
-          }
-          // error: don't cache so next visit retries
-          prefetchResolve()
-        }).catch(() => prefetchResolve())
+            if (result.kind === 'bytes') injectPrefetch(result.bytes)
+            // empty/not-found/error: just open the WS with no prefetch content
+            prefetchResolve()
+          }).catch(() => prefetchResolve())
+        }
+
+        openWs(prefetchBarrier, session.alive)
       }
 
-      openWs(prefetchBarrier)
     }
 
     // wireWs attaches message/error/close handlers to a freshly opened WebSocket.
@@ -202,16 +209,23 @@ export function useWebSocket(opts: UseWebSocketOptions): void {
         const doWrite = () => {
           const filtered = chunks.map(interceptOsc52)
           queueMany(filtered, () => {
-            if (savedGvY > 0 && termRef.current) {
-              termRef.current.scrollToLine(savedGvY)
-            }
             setTermLoading(false)
             emitSyncDiag({
               pendingWrite: false,
-              ghosttyScrollbackLines: termRef.current?.getScrollbackLength()
-                ?? 0,
+              scrollbackLines: termRef.current?.bridge?.getScrollbackCount() ?? 0,
+            })
+            // Force pixel-exact scroll to bottom after sync. WTerm renders its
+            // DOM update via requestAnimationFrame, so defer two frames to ensure
+            // scrollHeight is final before we set scrollTop.
+            const elRef = termRef
+            requestAnimationFrame(() => {
+              requestAnimationFrame(() => {
+                const el = elRef.current?.element
+                if (el) el.scrollTop = el.scrollHeight - el.clientHeight
+              })
             })
           })
+          emitSyncDiag({ syncEndedAt: Date.now(), pendingWrite: true })
           emitSyncDiag({ syncEndedAt: Date.now(), pendingWrite: true })
         }
         if (prefetchSettled) {
@@ -309,7 +323,8 @@ export function useWebSocket(opts: UseWebSocketOptions): void {
         }
       }
 
-      ws.onclose = () => {
+      ws.onclose = (ev: CloseEvent) => {
+        console.debug(`[ws] closed: code=${ev.code} reason=${JSON.stringify(ev.reason)} wasClean=${ev.wasClean} session=${session.id}`)
         resetResizeEchoGate()
         setWsState('lost')
         emitSyncDiag({ wsState: 'lost' })
@@ -326,16 +341,7 @@ export function useWebSocket(opts: UseWebSocketOptions): void {
     connect()
 
     return () => {
-      intentionalClose = true
-      const t = termRef.current
-      if (t) {
-        const gvY = Math.floor(t.getViewportY())
-        if (gvY > 0) {
-          savedScrollRef.current.set(session.id, gvY)
-        } else {
-          savedScrollRef.current.delete(session.id)
-        }
-      }
+
       termEpochRef.current = epoch + 1
       termIoRef.current?.reset(termEpochRef.current)
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current)

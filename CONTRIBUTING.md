@@ -28,9 +28,9 @@ just dev
 ```
 
 This starts:
-- **gmuxd** (`:8791`) — Go, auto-restarts on `.go` changes via watchexec
+- **gmuxd** (`:22226`) — Go, auto-restarts on `.go` changes via watchexec
 - **gmux-web** (`:5173`) — Vite HMR, proxies `/v1/*` and `/ws/*` to gmuxd
-- Open **http://localhost:8791** (gmuxd proxies vite on the same port)
+- Open **http://localhost:22226** (gmuxd proxies vite on the same port)
 
 **No manual kill needed.** When gmuxd starts, it asks any existing instance to shut down gracefully via the Unix socket before binding.
 
@@ -41,7 +41,7 @@ moon run gmuxd:dev        # just gmuxd with watchexec
 moon run gmux-web:dev     # just vite
 ```
 
-For additional scenarios (frontend-only against existing gmuxd, sandbox/container setup, mock mode), see **[docs/running-dev-frontend.md](docs/running-dev-frontend.md)**.
+For manual verification (bug reproduction, fix confirmation, screenshots), see **[docs/agent-verification.md](docs/agent-verification.md)**. For automated E2E tests, see **[docs/e2e.md](docs/e2e.md)**.
 
 ## Tests & linting
 
