@@ -33,11 +33,10 @@ This starts:
 
 **No manual kill needed.** When gmuxd starts, it asks any existing instance to shut down gracefully via the Unix socket before binding.
 
-To run services individually:
+To run just the frontend (vite only):
 
 ```bash
-moon run gmuxd:dev        # gmuxd with watchexec only
-moon run gmux-web:serve   # vite only
+moon run gmux-web:serve
 ```
 
 For manual verification (bug reproduction, fix confirmation, screenshots), see **[docs/agent-verification.md](docs/agent-verification.md)**. For automated E2E tests, see **[docs/e2e.md](docs/e2e.md)**.
