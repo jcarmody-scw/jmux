@@ -60,7 +60,7 @@ func (a *PiSDKSbx) Launchers() []adapter.Launcher {
 			Label:       "pi (sdk, sandbox)",
 			Command:     []string{"pi-sdk-sbx"}, // sentinel; not executed directly
 			Description: "New pi session via SDK subprocess bridge (sandbox)",
-			Available:   a.sdk.libPath != "",
+			Available:   false, // pending t-1142: sbx integration with pi --mode rpc
 		},
 	}
 }

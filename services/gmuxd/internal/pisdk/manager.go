@@ -1,6 +1,6 @@
 // Package pisdk manages pi-sdk subprocess sessions in gmuxd.
-// Each session owns one Node subprocess that communicates via JSON lines
-// on stdin/stdout. This package handles subprocess lifecycle, WebSocket
+// Each session owns one subprocess (pi --mode rpc) that communicates via JSON
+// lines on stdin/stdout. This package handles subprocess lifecycle, WebSocket
 // fan-out, and store updates.
 package pisdk
 
@@ -45,31 +45,31 @@ func New(s *store.Store) *Manager {
 	}
 }
 
-// Launch spawns the Node subprocess for a session that is already registered
-// in the store. nodeCmd is the full argv (e.g. ["node", "/path/to/index.js", "--cwd", cwd]).
-func (m *Manager) Launch(sessionID string, nodeCmd []string) error {
-	if len(nodeCmd) == 0 {
+// Launch spawns the subprocess for a session that is already registered
+// in the store. cmd is the full argv (e.g. ["pi", "--mode", "rpc", "--cwd", cwd]).
+func (m *Manager) Launch(sessionID string, cmd []string) error {
+	if len(cmd) == 0 {
 		return fmt.Errorf("pisdk: empty command")
 	}
 
-	cmd := exec.Command(nodeCmd[0], nodeCmd[1:]...)
-	cmd.Stderr = os.Stderr // surface Node errors in the gmuxd log
+	c := exec.Command(cmd[0], cmd[1:]...)
+	c.Stderr = os.Stderr // surface subprocess errors in the gmuxd log
 
-	stdin, err := cmd.StdinPipe()
+	stdin, err := c.StdinPipe()
 	if err != nil {
 		return fmt.Errorf("pisdk: stdin pipe: %w", err)
 	}
-	stdout, err := cmd.StdoutPipe()
+	stdout, err := c.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("pisdk: stdout pipe: %w", err)
 	}
 
-	if err := cmd.Start(); err != nil {
+	if err := c.Start(); err != nil {
 		return fmt.Errorf("pisdk: start: %w", err)
 	}
 
 	proc := &subprocess{
-		cmd:   cmd,
+		cmd:   c,
 		stdin: stdin,
 		done:  make(chan struct{}),
 	}
@@ -80,19 +80,27 @@ func (m *Manager) Launch(sessionID string, nodeCmd []string) error {
 
 	// Update store with PID.
 	m.store.Update(sessionID, func(s *store.Session) {
-		s.Pid = cmd.Process.Pid
+		s.Pid = c.Process.Pid
 	})
+
+	// Request state immediately so readLoop can synthesise session_ready.
+	if _, err := stdin.Write([]byte(`{"id":"startup","type":"get_state"}` + "\n")); err != nil {
+		log.Printf("pisdk: %s: get_state write: %v", sessionID, err)
+	}
 
 	go m.readLoop(sessionID, proc, stdout)
 	go m.waitLoop(sessionID, proc)
 
-	log.Printf("pisdk: launched session %s pid=%d", sessionID, cmd.Process.Pid)
+	log.Printf("pisdk: launched session %s pid=%d", sessionID, c.Process.Pid)
 	return nil
 }
 
 // readLoop reads JSON-line events from stdout and broadcasts them to all
-// connected WebSocket clients. Special events (session_ready) also update
-// the store.
+// connected WebSocket clients.
+//
+// RPC response lines (type=="response") are not forwarded to clients — they are
+// internal protocol acknowledgements. The startup get_state response is handled
+// specially to synthesise a session_ready event.
 func (m *Manager) readLoop(sessionID string, proc *subprocess, stdout io.Reader) {
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 256*1024), 256*1024)
@@ -100,9 +108,17 @@ func (m *Manager) readLoop(sessionID string, proc *subprocess, stdout io.Reader)
 	for scanner.Scan() {
 		line := scanner.Bytes()
 
-		// Peek at the event type.
+		// Peek at type (and optional fields used for special handling).
 		var peek struct {
-			Type  string `json:"type"`
+			Type    string `json:"type"`
+			Command string `json:"command"`
+			Success bool   `json:"success"`
+			Data    struct {
+				Model       struct{ ID string `json:"id"` } `json:"model"`
+				SessionFile string `json:"sessionFile"`
+				SessionID   string `json:"sessionId"`
+			} `json:"data"`
+			// Legacy direct fields (session_ready from old pi-sdk-lib).
 			Model string `json:"model"`
 		}
 		if err := json.Unmarshal(line, &peek); err != nil {
@@ -110,7 +126,29 @@ func (m *Manager) readLoop(sessionID string, proc *subprocess, stdout io.Reader)
 			continue
 		}
 
-		// session_ready carries the resolved model name — show it as subtitle.
+		// RPC response lines are internal — filter them before broadcast.
+		// The startup get_state response is used to synthesise session_ready.
+		if peek.Type == "response" {
+			if peek.Command == "get_state" && peek.Success && peek.Data.Model.ID != "" {
+				modelID := peek.Data.Model.ID
+				sessFile := peek.Data.SessionFile
+				m.store.Update(sessionID, func(s *store.Session) {
+					s.Subtitle = modelID
+				})
+				// Synthesise session_ready so the frontend shows "connected · <model>".
+				synthesised, _ := json.Marshal(map[string]string{
+					"type":        "session_ready",
+					"model":        modelID,
+					"sessionFile": sessFile,
+				})
+				line = synthesised
+				// Fall through to broadcast the synthesised event.
+			} else {
+				continue // drop all other response lines
+			}
+		}
+
+		// Legacy: direct session_ready (kept for test helpers / future use).
 		if peek.Type == "session_ready" && peek.Model != "" {
 			m.store.Update(sessionID, func(s *store.Session) {
 				s.Subtitle = peek.Model
@@ -232,12 +270,15 @@ func (m *Manager) HandleWebSocket(w http.ResponseWriter, r *http.Request, sessio
 	}()
 
 	// Relay: client messages → subprocess stdin.
+	// Translate WebSocket prompt format → RPC format:
+	//   {"type":"prompt","text":"..."} → {"type":"prompt","message":"..."}
 	ctx := r.Context()
 	for {
 		_, data, err := conn.Read(ctx)
 		if err != nil {
 			return
 		}
+		data = translateToRPC(data)
 		line := append(data, '\n')
 		if _, err := proc.stdin.Write(line); err != nil {
 			log.Printf("pisdk: %s: stdin write: %v", sessionID, err)
@@ -297,4 +338,32 @@ func (m *Manager) Shutdown(timeout time.Duration) {
 			}
 		}
 	}
+}
+
+// translateToRPC rewrites WebSocket client messages to match the RPC protocol.
+// The only difference is the prompt command: WS uses {"text":"..."} but RPC
+// expects {"message":"..."}. All other message types pass through unchanged.
+func translateToRPC(data []byte) []byte {
+	var msg map[string]json.RawMessage
+	if err := json.Unmarshal(data, &msg); err != nil {
+		return data // not valid JSON — pass through as-is
+	}
+	rawType, ok := msg["type"]
+	if !ok {
+		return data
+	}
+	var msgType string
+	if err := json.Unmarshal(rawType, &msgType); err != nil || msgType != "prompt" {
+		return data // not a prompt — pass through unchanged
+	}
+	if textRaw, hasText := msg["text"]; hasText {
+		msg["message"] = textRaw
+		delete(msg, "text")
+		out, err := json.Marshal(msg)
+		if err != nil {
+			return data
+		}
+		return out
+	}
+	return data
 }

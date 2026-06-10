@@ -1,7 +1,9 @@
 package pisdk
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -37,6 +39,23 @@ func TestHelperProcess(t *testing.T) {
 	case "echo-stdin":
 		// Echo every byte received on stdin back to stdout (used for broadcast tests).
 		io.Copy(os.Stdout, os.Stdin) //nolint:errcheck
+	case "rpc-sim":
+		// Simulates pi --mode rpc: responds to get_state with a response line,
+		// echoes all other stdin lines back as events, exits on stdin close.
+		scanner := bufio.NewScanner(os.Stdin)
+		for scanner.Scan() {
+			line := scanner.Text()
+			var cmd map[string]interface{}
+			if err := json.Unmarshal([]byte(line), &cmd); err != nil {
+				continue
+			}
+			if cmd["type"] == "get_state" {
+				fmt.Println(`{"type":"response","command":"get_state","success":true,"data":{"model":{"id":"test-model"},"sessionFile":"/tmp/test.jsonl","sessionId":"abc"}}`)
+			} else {
+				// Echo back as an event so broadcast tests can verify receipt.
+				fmt.Println(line)
+			}
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "pisdk test helper: unknown mode %q\n", mode)
 		os.Exit(1)
@@ -173,19 +192,25 @@ func TestBroadcastToConnectedClients(t *testing.T) {
 		t.Fatalf("stdin write: %v", err)
 	}
 
-	readMsg := func(conn *websocket.Conn, label string) string {
-		rctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_, data, err := conn.Read(rctx)
-		if err != nil {
-			t.Errorf("%s read: %v", label, err)
-			return ""
+	// readUntil reads WS messages until it finds the expected one, discarding
+	// any startup echoes that arrive first (e.g. the get_state echo).
+	readUntil := func(conn *websocket.Conn, label, want string) string {
+		for {
+			rctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_, data, err := conn.Read(rctx)
+			cancel()
+			if err != nil {
+				t.Errorf("%s read: %v", label, err)
+				return ""
+			}
+			if string(data) == want {
+				return string(data)
+			}
 		}
-		return string(data)
 	}
 
-	got1 := readMsg(c1, "client 1")
-	got2 := readMsg(c2, "client 2")
+	got1 := readUntil(c1, "client 1", want)
+	got2 := readUntil(c2, "client 2", want)
 
 	if got1 != want {
 		t.Errorf("client 1: got %q, want %q", got1, want)
@@ -247,7 +272,7 @@ func TestShutdown(t *testing.T) {
 	s := newTestStore("sess-4")
 	m := New(s)
 
-	launchHelper(t, m, "sess-4", "emit-session-ready")
+	launchHelper(t, m, "sess-4", "rpc-sim")
 
 	// Wait for the subprocess to be fully running (subtitle updated).
 	waitFor(t, 5*time.Second, "subtitle set", func() bool {
@@ -262,4 +287,155 @@ func TestShutdown(t *testing.T) {
 		sess, _ := s.Get("sess-4")
 		return !sess.Alive
 	})
+}
+
+// TestRpcSessionReadyUpdatesSubtitle verifies that the manager synthesises a
+// session_ready event (and updates the store subtitle) from the get_state RPC
+// response emitted by rpc-sim on startup.
+func TestRpcSessionReadyUpdatesSubtitle(t *testing.T) {
+	s := newTestStore("sess-5")
+	m := New(s)
+
+	launchHelper(t, m, "sess-5", "rpc-sim")
+
+	waitFor(t, 5*time.Second, "subtitle == test-model", func() bool {
+		sess, _ := s.Get("sess-5")
+		return sess.Subtitle == "test-model"
+	})
+
+	// Cleanup.
+	m.mu.Lock()
+	proc := m.sessions["sess-5"]
+	m.mu.Unlock()
+	if proc != nil {
+		proc.stdin.Close()
+	}
+}
+
+// TestResponseLinesNotBroadcast verifies that RPC response lines are filtered
+// out and never forwarded to WebSocket clients.
+func TestResponseLinesNotBroadcast(t *testing.T) {
+	s := newTestStore("sess-6")
+	m := New(s)
+
+	launchHelper(t, m, "sess-6", "rpc-sim")
+
+	// Wait for startup get_state to be consumed.
+	waitFor(t, 5*time.Second, "subtitle set", func() bool {
+		sess, _ := s.Get("sess-6")
+		return sess.Subtitle != ""
+	})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		m.HandleWebSocket(w, r, "sess-6")
+	}))
+	defer srv.Close()
+
+	ctx := context.Background()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/"
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	// Send an event line directly to the subprocess — it echoes back as an event.
+	// The echo should arrive at the client.
+	want := `{"type":"agent_start"}`
+	m.mu.Lock()
+	proc := m.sessions["sess-6"]
+	m.mu.Unlock()
+	if _, err := proc.stdin.Write([]byte(want + "\n")); err != nil {
+		t.Fatalf("stdin write: %v", err)
+	}
+
+	rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	_, data, err := conn.Read(rctx)
+	if err != nil {
+		t.Fatalf("ws read: %v", err)
+	}
+	got := string(data)
+
+	// The response line for get_state must NOT have been forwarded.
+	// The agent_start event SHOULD have arrived.
+	if strings.Contains(got, "\"command\":") {
+		t.Errorf("response line leaked to client: %s", got)
+	}
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+
+	proc.stdin.Close()
+}
+
+// TestPromptTextTranslation verifies that WebSocket input with field 'text' is
+// translated to the RPC field 'message' before reaching the subprocess stdin.
+func TestPromptTextTranslation(t *testing.T) {
+	s := newTestStore("sess-7")
+	m := New(s)
+
+	// Use echo-stdin so we can observe exactly what reaches the subprocess stdin.
+	// We intercept at the subprocess stdout (echo) level.
+	launchHelper(t, m, "sess-7", "echo-stdin")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		m.HandleWebSocket(w, r, "sess-7")
+	}))
+	defer srv.Close()
+
+	ctx := context.Background()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/"
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	waitFor(t, 3*time.Second, "conn registered", func() bool {
+		m.mu.Lock()
+		proc := m.sessions["sess-7"]
+		m.mu.Unlock()
+		if proc == nil {
+			return false
+		}
+		proc.mu.Lock()
+		defer proc.mu.Unlock()
+		return len(proc.conns) == 1
+	})
+
+	// Send a prompt with 'text' field (WebSocket protocol).
+	wsMsg := `{"type":"prompt","text":"hello world"}`
+	if err := conn.Write(ctx, websocket.MessageText, []byte(wsMsg)); err != nil {
+		t.Fatalf("ws write: %v", err)
+	}
+
+	// Read messages until we find one with type=="prompt" (skipping any
+	// startup get_state echo that may arrive first).
+	var got map[string]interface{}
+	for {
+		rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		_, data, err := conn.Read(rctx)
+		cancel()
+		if err != nil {
+			t.Fatalf("ws read: %v", err)
+		}
+		if err := json.Unmarshal(data, &got); err != nil {
+			t.Fatalf("parse echoed line: %v", err)
+		}
+		if got["type"] == "prompt" {
+			break
+		}
+	}
+	if _, hasText := got["text"]; hasText {
+		t.Error("translated prompt still has 'text' field")
+	}
+	if msg, ok := got["message"]; !ok || msg != "hello world" {
+		t.Errorf("expected message='hello world', got: %v", got)
+	}
+
+	m.mu.Lock()
+	proc := m.sessions["sess-7"]
+	m.mu.Unlock()
+	proc.stdin.Close()
 }

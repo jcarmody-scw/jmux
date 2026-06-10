@@ -93,11 +93,6 @@ tasks:
       (cd "$ROOT/cli/gmux" && go build -o "$DEV_BIN_DIR/gmux-dev" ./cmd/gmux)
       (cd "$ROOT/services/gmuxd" && go build -o "$DEV_BIN_DIR/gmuxd-dev" ./cmd/gmuxd)
 
-      echo "→ Bundling pi-sdk-lib..."
-      (cd "$ROOT/services/gmuxd/pi-sdk-lib" && pnpm bundle)
-      mkdir -p "$DEV_BIN_DIR/pi-sdk-lib/dist"
-      cp "$ROOT/services/gmuxd/pi-sdk-lib/dist/index.js" "$DEV_BIN_DIR/pi-sdk-lib/dist/index.js"
-
       # ── Shared env ──
       export GMUX_SOCKET_DIR="$DEV_SOCKET_DIR"
       export GMUX_CONFIG_DIR="$DEV_STATE_DIR/config/gmux"
@@ -176,9 +171,6 @@ tasks:
       rm -rf "$WEB_EMBED/assets" "$WEB_EMBED/favicon.svg" "$WEB_EMBED/manifest.json"
       cp -r "$MOON_WORKSPACE_ROOT/apps/gmux-web/dist/"* "$WEB_EMBED/"
       go build -o "$MOON_WORKSPACE_ROOT/bin/gmuxd" ./cmd/gmuxd
-      (cd pi-sdk-lib && pnpm bundle)
-      mkdir -p "$MOON_WORKSPACE_ROOT/bin/pi-sdk-lib/dist"
-      cp pi-sdk-lib/dist/index.js "$MOON_WORKSPACE_ROOT/bin/pi-sdk-lib/dist/index.js"
     deps:
       - gmux-web:build
       - gmux:build
@@ -187,8 +179,6 @@ tasks:
       - "internal/**/*"
       - "go.mod"
       - "/packages/adapter/**/*.go"
-      - "pi-sdk-lib/src/**/*"
-      - "pi-sdk-lib/package.json"
 
   install:
     script: |
@@ -197,8 +187,6 @@ tasks:
       prefix=$(brew --prefix 2>/dev/null || echo /usr/local)
       cp "$MOON_WORKSPACE_ROOT/bin/gmux"  "$prefix/bin/gmux"
       cp "$MOON_WORKSPACE_ROOT/bin/gmuxd" "$prefix/bin/gmuxd"
-      rm -rf "$prefix/bin/pi-sdk-lib"
-      cp -r  "$MOON_WORKSPACE_ROOT/bin/pi-sdk-lib" "$prefix/bin/pi-sdk-lib"
       if command -v codesign >/dev/null 2>&1; then
         codesign --sign - --force "$prefix/bin/gmux"
         codesign --sign - --force "$prefix/bin/gmuxd"

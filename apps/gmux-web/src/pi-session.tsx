@@ -301,21 +301,19 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
       }
       case 'tool_execution_update': {
         const toolCallId = String(ev.toolCallId)
-        const partial = String(ev.partialResult ?? '')
+        // partialResult is {content: [{type:'text',text:'...'}], details:{}} in RPC mode.
+        // The accumulated output replaces previous output on each update.
+        const partial = extractResultText(ev.partialResult)
         setItems(prev => updateLastAssistantToolExec(prev, toolCallId, existing => ({
           ...(existing ?? { toolCallId, toolName: '', args: {}, output: '', done: false, isError: false }),
-          output: (existing?.output ?? '') + partial,
+          output: partial,
         })))
         break
       }
       case 'tool_execution_end': {
         const toolCallId = String(ev.toolCallId)
-        const resultStr = (() => {
-          const r = ev.result
-          if (!r) return ''
-          if (typeof r === 'string') return r
-          try { return JSON.stringify(r) } catch { return '' }
-        })()
+        // result is {content: [{type:'text',text:'...'}], details:{}} in RPC mode.
+        const resultStr = extractResultText(ev.result)
         setItems(prev => updateLastAssistantToolExec(prev, toolCallId, existing => ({
           ...(existing ?? { toolCallId, toolName: '', args: {}, output: '', done: false, isError: false }),
           output: resultStr,
@@ -475,6 +473,25 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
 
 // ---------------------------------------------------------------------------
 // Helper: update toolExecMap on the last AssistantItem
+// ---------------------------------------------------------------------------
+// Helper: extract plain text from an RPC tool result/partial-result object.
+// RPC tool results have shape {content: [{type:'text',text:'...'}], details:{}}.
+// Falls back to string coercion for legacy plain-string results.
+// ---------------------------------------------------------------------------
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function extractResultText(r: any): string {
+  if (!r) return ''
+  if (typeof r === 'string') return r
+  if (Array.isArray(r.content)) {
+    return (r.content as Array<{type: string; text?: string}>)
+      .filter(b => b.type === 'text')
+      .map(b => b.text ?? '')
+      .join('')
+  }
+  return ''
+}
+
 // ---------------------------------------------------------------------------
 
 function updateLastAssistantToolExec(
