@@ -170,7 +170,7 @@ tasks:
       WEB_EMBED="cmd/gmuxd/web"
       rm -rf "$WEB_EMBED/assets" "$WEB_EMBED/favicon.svg" "$WEB_EMBED/manifest.json"
       cp -r "$MOON_WORKSPACE_ROOT/apps/gmux-web/dist/"* "$WEB_EMBED/"
-      go build -o "$MOON_WORKSPACE_ROOT/bin/gmuxd" ./cmd/gmuxd
+      GOOS=darwin GOARCH=arm64 go build -o "$MOON_WORKSPACE_ROOT/bin/gmuxd" ./cmd/gmuxd
     deps:
       - gmux-web:build
       - gmux:build
