@@ -67,7 +67,7 @@ finds the project slug, authenticates the browser, and navigates.
 |---|---|
 | UI / React / CSS only; no Go changes | `frontend` |
 | Any `.go` file changed | `full` |
-| Reproduce a bug in production, or verify after `just install` | `prod` |
+| Reproduce a bug in production, or verify after `moon run :install` | `prod` |
 
 Default to `frontend`. Use `full` only when Go source has changed.
 
@@ -84,4 +84,4 @@ isolated daemon — do not mix it with the manual verification setups above.
 - **Never open a PR against `gmuxapp/gmux` (the upstream repo).** Always
   use the fork remote (`fork`, `https://github.com/jcarmody-scw/jmux.git`)
   and target its `main` branch: `gh pr create --repo jcarmody-scw/jmux --base main`.
-- Use `./scripts/install.sh` when asked to install locally.
+- Use `moon run :install` when asked to install locally.

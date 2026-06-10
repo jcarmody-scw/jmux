@@ -1,7 +1,7 @@
 language: javascript
 
 tasks:
-  dev:
+  watch:
     command: pnpm exec tsc --watch --preserveWatchOutput -p tsconfig.json
     preset: server
   build:

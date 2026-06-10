@@ -10,7 +10,7 @@
 | **watchexec** | Auto-rebuild Go on file change (dev mode) | `pacman -S watchexec` / `cargo install watchexec-cli` / [github.com/watchexec/watchexec](https://github.com/watchexec/watchexec/releases) |
 | **jj** | Version control | [martinvonz.github.io/jj](https://martinvonz.github.io/jj/) |
 
-Optional: **moon** is installed locally via pnpm (`@moonrepo/cli`), no global install needed.
+**moon** is the build system, installed locally via pnpm (`@moonrepo/cli`). No global install needed.
 
 ## Getting started
 
@@ -20,11 +20,10 @@ pnpm install          # JS dependencies + moon
 
 ## Development
 
-Run all services with watch/HMR:
+Run the full dev stack (vite + gmuxd + watchexec, with HMR):
 
 ```bash
-just dev
-# or: moon run :dev
+moon run :dev
 ```
 
 This starts:
@@ -37,8 +36,8 @@ This starts:
 To run services individually:
 
 ```bash
-moon run gmuxd:dev        # just gmuxd with watchexec
-moon run gmux-web:dev     # just vite
+moon run gmuxd:dev        # gmuxd with watchexec only
+moon run gmux-web:serve   # vite only
 ```
 
 For manual verification (bug reproduction, fix confirmation, screenshots), see **[docs/agent-verification.md](docs/agent-verification.md)**. For automated E2E tests, see **[docs/e2e.md](docs/e2e.md)**.

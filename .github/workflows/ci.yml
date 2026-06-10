@@ -104,7 +104,7 @@ jobs:
         run: pnpm exec playwright install --with-deps chromium
 
       - name: Build gmux + frontend
-        run: ./scripts/build.sh
+        run: pnpm exec moon run gmuxd:build
         env:
           GOWORK: ${{ github.workspace }}/go.work
 

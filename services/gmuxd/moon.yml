@@ -2,16 +2,186 @@ language: bash
 
 tasks:
   dev:
-    script: exec watchexec -r -e go -w . -w ../../packages/adapter -- 'go build -o ../../bin/gmuxd ./cmd/gmuxd && exec ../../bin/gmuxd start --replace'
-    deps:
-      - gmux:build
+    script: |
+      set -euo pipefail
+      ROOT="$MOON_WORKSPACE_ROOT"
+      DEV_BIN_DIR="$ROOT/bin"
+
+      # ── Instance identity ──
+      # Grove worktrees live at .grove/<name> under the main repo.
+      if [[ "$(basename "$(dirname "$ROOT")")" == ".grove" ]]; then
+        INSTANCE_NAME="$(basename "$ROOT")"
+        INSTANCE_HASH=$(printf '%s' "$ROOT" | cksum | awk '{print $1}')
+        DEV_PORT=$((8800 + INSTANCE_HASH % 100))
+        DEV_VITE_PORT=$((DEV_PORT + 100))
+        DEV_SOCKET_DIR="/tmp/gmux-dev-$INSTANCE_NAME"
+        DEV_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/gmux-dev-$INSTANCE_NAME"
+        DEV_TS_HOSTNAME="gmux-dev-$INSTANCE_NAME"
+      else
+        INSTANCE_NAME="gmux-dev"
+        DEV_PORT=22226
+        DEV_VITE_PORT=5173
+        DEV_SOCKET_DIR="/tmp/gmux-dev-sessions"
+        DEV_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/gmux-dev"
+        DEV_TS_HOSTNAME="gmux-dev"
+      fi
+
+      # ── Tear down any previous instance on these ports ──
+      echo "→ Tearing down any previous $INSTANCE_NAME instance..."
+
+      if [[ -S "${XDG_STATE_HOME:-$HOME/.local/state}/$INSTANCE_NAME/state/gmux/gmuxd.sock" ]]; then
+        "$DEV_BIN_DIR/gmuxd-dev" stop 2>/dev/null || true
+      fi
+
+      _kill_port() {
+        local port="$1"
+        local pid
+        pid=$(lsof -ti :"$port" 2>/dev/null) || return 0
+        echo "  killing pid $pid (port $port)"
+        kill "$pid" 2>/dev/null || true
+        local i
+        for i in 1 2 3; do
+          sleep 1
+          lsof -ti :"$port" >/dev/null 2>&1 || return 0
+        done
+        kill -9 "$pid" 2>/dev/null || true
+      }
+      _kill_port "$DEV_VITE_PORT"
+      _kill_port "$DEV_PORT"
+
+      rm -rf "$ROOT/apps/gmux-web/node_modules/.vite"
+
+      # ── Prepare directories and config ──
+      mkdir -p "$DEV_SOCKET_DIR" "$DEV_STATE_DIR/config/gmux" "$DEV_STATE_DIR/state" "$DEV_STATE_DIR/pi-agent"
+
+      cat > "$DEV_STATE_DIR/config/gmux/host.toml" << EOF
+      port = $DEV_PORT
+
+      [tailscale]
+      enabled = true
+      hostname = "$DEV_TS_HOSTNAME"
+      EOF
+
+      if [[ ! -f "$DEV_STATE_DIR/state/gmux/projects.json" ]]; then
+        mkdir -p "$DEV_STATE_DIR/state/gmux"
+        cat > "$DEV_STATE_DIR/state/gmux/projects.json" << EOF
+      {
+        "version": 2,
+        "items": [
+          { "slug": "home", "match": [{ "path": "~", "exact": true }] },
+          { "slug": "workspace", "match": [{ "path": "$WORKSPACE_DIR" }] }
+        ]
+      }
+      EOF
+      else
+        python3 - "$DEV_STATE_DIR/state/gmux/projects.json" "${WORKSPACE_DIR:-$HOME}" << 'PYEOF'
+      import json, sys
+      path, workspace_dir = sys.argv[1], sys.argv[2]
+      with open(path) as f:
+          data = json.load(f)
+      slugs = {item['slug'] for item in data.get('items', [])}
+      if 'workspace' not in slugs:
+          data['items'].append({'slug': 'workspace', 'match': [{'path': workspace_dir}]})
+          with open(path, 'w') as f:
+              json.dump(data, f, indent=2)
+          print(f'→ Added workspace project pointing at {workspace_dir}')
+      PYEOF
+      fi
+
+      # ── Build ──
+      echo "→ Building Go binaries..."
+      (cd "$ROOT/cli/gmux" && go build -o "$DEV_BIN_DIR/gmux-dev" ./cmd/gmux)
+      (cd "$ROOT/services/gmuxd" && go build -o "$DEV_BIN_DIR/gmuxd-dev" ./cmd/gmuxd)
+
+      echo "→ Bundling pi-sdk-lib..."
+      (cd "$ROOT/services/gmuxd/pi-sdk-lib" && pnpm bundle)
+      mkdir -p "$DEV_BIN_DIR/pi-sdk-lib/dist"
+      cp "$ROOT/services/gmuxd/pi-sdk-lib/dist/index.js" "$DEV_BIN_DIR/pi-sdk-lib/dist/index.js"
+
+      # ── Shared env ──
+      export GMUX_SOCKET_DIR="$DEV_SOCKET_DIR"
+      export GMUX_CONFIG_DIR="$DEV_STATE_DIR/config/gmux"
+      export XDG_CONFIG_HOME="$DEV_STATE_DIR/config"
+      export XDG_STATE_HOME="$DEV_STATE_DIR/state"
+      export GMUXD_DEV_PROXY="http://localhost:$DEV_VITE_PORT"
+      export PI_CODING_AGENT_DIR="$DEV_STATE_DIR/pi-agent"
+      export VITE_DEV_PROXY_PORT="$DEV_PORT"
+
+      # ── Cleanup ──
+      PIDS=()
+      cleanup() {
+        echo ""
+        echo "Shutting down dev environment ($INSTANCE_NAME)..."
+        for pid in "${PIDS[@]}"; do
+          kill "$pid" 2>/dev/null || true
+        done
+        wait 2>/dev/null
+      }
+      trap cleanup EXIT INT TERM
+
+      # ── Start vite ──
+      echo "→ Starting vite dev server on port $DEV_VITE_PORT..."
+      (cd "$ROOT/apps/gmux-web" && npx vite --port "$DEV_VITE_PORT") &
+      PIDS+=($!)
+
+      sleep 1
+
+      # ── Start gmuxd ──
+      echo "→ Starting gmuxd on port $DEV_PORT..."
+      "$DEV_BIN_DIR/gmuxd-dev" start &
+      PIDS+=($!)
+
+      # ── Watch Go files → rebuild + restart gmuxd ──
+      echo "→ Watching Go files for changes..."
+      watchexec \
+        --watch "$ROOT/services/gmuxd" \
+        --watch "$ROOT/cli/gmux" \
+        --watch "$ROOT/packages/adapter" \
+        -e go \
+        --debounce 500 \
+        --restart \
+        --shell bash \
+        -- "
+          echo '→ Go files changed, rebuilding...'
+          (cd '$ROOT/cli/gmux' && go build -o '$DEV_BIN_DIR/gmux-dev' ./cmd/gmux) &&
+          (cd '$ROOT/services/gmuxd' && go build -o '$DEV_BIN_DIR/gmuxd-dev' ./cmd/gmuxd) &&
+          echo '→ Restarting gmuxd-dev ($INSTANCE_NAME)...' &&
+          GMUX_SOCKET_DIR=$DEV_SOCKET_DIR \
+          GMUX_CONFIG_DIR='$DEV_STATE_DIR/config/gmux' \
+          XDG_CONFIG_HOME='$DEV_STATE_DIR/config' \
+          XDG_STATE_HOME='$DEV_STATE_DIR/state' \
+          GMUXD_DEV_PROXY='http://localhost:$DEV_VITE_PORT' \
+          PI_CODING_AGENT_DIR='$DEV_STATE_DIR/pi-agent' \
+          '$DEV_BIN_DIR/gmuxd-dev' start
+        " &
+      PIDS+=($!)
+
+      echo ""
+      echo "══════════════════════════════════════════════════════"
+      echo "  gmux dev: $INSTANCE_NAME"
+      echo ""
+      echo "  Local:     http://localhost:$DEV_PORT"
+      echo "  Tailscale: https://$DEV_TS_HOSTNAME.<tailnet>"
+      echo "  Sockets:   $DEV_SOCKET_DIR"
+      echo ""
+      echo "  Launch a session: bin/gmux-dev <cmd>"
+      echo "══════════════════════════════════════════════════════"
+
+      wait
     preset: server
+
   build:
     script: |
-      go build -o ../../bin/gmuxd ./cmd/gmuxd
+      WEB_EMBED="cmd/gmuxd/web"
+      rm -rf "$WEB_EMBED/assets" "$WEB_EMBED/favicon.svg" "$WEB_EMBED/manifest.json"
+      cp -r "$MOON_WORKSPACE_ROOT/apps/gmux-web/dist/"* "$WEB_EMBED/"
+      go build -o "$MOON_WORKSPACE_ROOT/bin/gmuxd" ./cmd/gmuxd
       (cd pi-sdk-lib && pnpm bundle)
-      mkdir -p ../../bin/pi-sdk-lib/dist
-      cp pi-sdk-lib/dist/index.js ../../bin/pi-sdk-lib/dist/index.js
+      mkdir -p "$MOON_WORKSPACE_ROOT/bin/pi-sdk-lib/dist"
+      cp pi-sdk-lib/dist/index.js "$MOON_WORKSPACE_ROOT/bin/pi-sdk-lib/dist/index.js"
+    deps:
+      - gmux-web:build
+      - gmux:build
     inputs:
       - "cmd/**/*"
       - "internal/**/*"
@@ -19,7 +189,46 @@ tasks:
       - "/packages/adapter/**/*.go"
       - "pi-sdk-lib/src/**/*"
       - "pi-sdk-lib/package.json"
+
+  install:
+    script: |
+      set -euo pipefail
+      goos=$(go env GOOS)
+      prefix=$(brew --prefix 2>/dev/null || echo /usr/local)
+      cp "$MOON_WORKSPACE_ROOT/bin/gmux"  "$prefix/bin/gmux"
+      cp "$MOON_WORKSPACE_ROOT/bin/gmuxd" "$prefix/bin/gmuxd"
+      rm -rf "$prefix/bin/pi-sdk-lib"
+      cp -r  "$MOON_WORKSPACE_ROOT/bin/pi-sdk-lib" "$prefix/bin/pi-sdk-lib"
+      if command -v codesign >/dev/null 2>&1; then
+        codesign --sign - --force "$prefix/bin/gmux"
+        codesign --sign - --force "$prefix/bin/gmuxd"
+      fi
+      if [[ "$goos" == "darwin" ]]; then
+        plist="$HOME/Library/LaunchAgents/com.gmuxapp.gmuxd.plist"
+        mkdir -p "$HOME/Library/LaunchAgents" "$HOME/.local/state/gmux"
+        sed \
+          -e "s|\${GMUXD_BIN}|$prefix/bin/gmuxd|g" \
+          -e "s|\${HOME}|$HOME|g" \
+          -e "s|\${SHELL}|$SHELL|g" \
+          -e "s|\${PATH}|$PATH|g" \
+          -e "s|\${GMUX_CONFIG_DIR}|${GMUX_CONFIG_DIR:-$HOME/james-agent-workspace/.gmux}|g" \
+          "$MOON_WORKSPACE_ROOT/scripts/com.gmuxapp.gmuxd.plist.template" \
+          > "$plist"
+        launchctl bootout "gui/$(id -u)/com.gmuxapp.gmuxd" 2>/dev/null || true
+        for i in $(seq 1 20); do
+          launchctl print "gui/$(id -u)/com.gmuxapp.gmuxd" >/dev/null 2>&1 || break
+          sleep 0.25
+        done
+        launchctl bootstrap "gui/$(id -u)" "$plist"
+        echo "✓ gmuxd running as launchd agent"
+      else
+        gmuxd restart
+      fi
+    deps:
+      - ~:build
+
   test:
     command: go test ./...
+
   lint:
     command: go vet ./...

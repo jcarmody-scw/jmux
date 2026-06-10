@@ -172,8 +172,8 @@ graph TD
 See [CONTRIBUTING.md](CONTRIBUTING.md) for prerequisites and setup.
 
 ```bash
-pnpm install      # JS dependencies
-./dev              # start all services with watch/HMR
+pnpm install      # JS dependencies + moon
+moon run :dev     # start all services with watch/HMR
 ```
 
 For manual verification (bug reproduction, fix confirmation, screenshots) and automated E2E tests see

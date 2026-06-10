@@ -1,7 +1,7 @@
 language: javascript
 
 tasks:
-  dev:
+  serve:
     command: pnpm exec vite
     deps:
       - protocol:build
