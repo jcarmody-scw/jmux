@@ -14,21 +14,24 @@ func init() {
 // Session files are identical to regular pi JSONL sessions; all file-related
 // capabilities delegate to Pi.
 type PiSDK struct {
-	pi *Pi
+	pi     *Pi
+	piBin  string // absolute path resolved at startup; avoids launchd PATH issues
 }
 
 func NewPiSDK() *PiSDK {
-	return &PiSDK{pi: NewPi()}
+	a := &PiSDK{pi: NewPi()}
+	if p, err := exec.LookPath("pi"); err == nil {
+		a.piBin = p
+	}
+	return a
 }
 
 // ── Adapter base ────────────────────────────────────────────────────────────
 
 func (a *PiSDK) Name() string { return "pi-sdk" }
 
-func (a *PiSDK) Discover() bool {
-	_, err := exec.LookPath("pi")
-	return err == nil
-}
+// Discover returns true if the pi binary was found at startup.
+func (a *PiSDK) Discover() bool { return a.piBin != "" }
 
 // Match always returns false: pi-sdk sessions are not PTY sessions, so no
 // gmux-run process will ever report this adapter kind.
@@ -54,8 +57,11 @@ func (a *PiSDK) Launchers() []adapter.Launcher {
 
 // ── SubprocessAdapter ───────────────────────────────────────────────────────
 
-func (a *PiSDK) SubprocessCommand(cwd string) []string {
-	return []string{"pi", "--mode", "rpc"}
+// SubprocessCommand returns the argv to run pi in RPC mode.
+// Uses the absolute path resolved at startup so the subprocess spawns correctly
+// regardless of the runtime PATH (e.g. when gmuxd runs under launchd on macOS).
+func (a *PiSDK) SubprocessCommand(_ string) []string {
+	return []string{a.piBin, "--mode", "rpc"}
 }
 
 // ── File capabilities (delegate to Pi) ─────────────────────────────────────
