@@ -107,7 +107,7 @@ func waitFor(t *testing.T, timeout time.Duration, desc string, cond func() bool)
 func launchHelper(t *testing.T, m *Manager, sessID, mode string) {
 	t.Helper()
 	t.Setenv("GO_WANT_HELPER_PROCESS", "1")
-	if err := m.Launch(sessID, helperCmd(mode)); err != nil {
+	if err := m.Launch(sessID, helperCmd(mode), ""); err != nil {
 		t.Fatalf("Launch(%s): %v", mode, err)
 	}
 }

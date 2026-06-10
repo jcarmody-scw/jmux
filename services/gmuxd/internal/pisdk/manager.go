@@ -46,13 +46,15 @@ func New(s *store.Store) *Manager {
 }
 
 // Launch spawns the subprocess for a session that is already registered
-// in the store. cmd is the full argv (e.g. ["pi", "--mode", "rpc", "--cwd", cwd]).
-func (m *Manager) Launch(sessionID string, cmd []string) error {
-	if len(cmd) == 0 {
+// in the store. argv is the full command + args (e.g. ["pi", "--mode", "rpc"]).
+// dir is the working directory for the subprocess.
+func (m *Manager) Launch(sessionID string, argv []string, dir string) error {
+	if len(argv) == 0 {
 		return fmt.Errorf("pisdk: empty command")
 	}
 
-	c := exec.Command(cmd[0], cmd[1:]...)
+	c := exec.Command(argv[0], argv[1:]...)
+	c.Dir = dir
 	c.Stderr = os.Stderr // surface subprocess errors in the gmuxd log
 
 	stdin, err := c.StdinPipe()

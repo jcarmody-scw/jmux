@@ -1145,7 +1145,7 @@ func serve(stderr io.Writer) int {
 				if fileMon != nil {
 					fileMon.NotifyNewSession(sessionID)
 				}
-			if err := piSDKManager.Launch(sessionID, subCmd); err != nil {
+			if err := piSDKManager.Launch(sessionID, subCmd, cwd); err != nil {
 				log.Printf("launch: pi-sdk subprocess failed: %v", err)
 				writeError(w, http.StatusInternalServerError, "launch_failed", err.Error())
 				return

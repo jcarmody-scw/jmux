@@ -55,7 +55,7 @@ func (a *PiSDK) Launchers() []adapter.Launcher {
 // ── SubprocessAdapter ───────────────────────────────────────────────────────
 
 func (a *PiSDK) SubprocessCommand(cwd string) []string {
-	return []string{"pi", "--mode", "rpc", "--cwd", cwd}
+	return []string{"pi", "--mode", "rpc"}
 }
 
 // ── File capabilities (delegate to Pi) ─────────────────────────────────────
