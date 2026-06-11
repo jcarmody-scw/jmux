@@ -19,8 +19,7 @@ TOKEN= commands or `agent-browser navigate` calls — that's what the tool
 is for. The tool handles health-checking the daemon, fetching the right
 token, and navigating.
 
-If `gmux_verify` is not available, the tool is not loaded — check that pi
-was launched from the repo root.
+If `gmux_verify` is not in your toolset, **stop immediately**. Report this as the first line of your done signal: `gmux_verify not available — pi was not launched from the repo root or the extension failed to load.` Do not attempt manual TOKEN= commands or agent-browser calls as a substitute.
 
 ## Testing
 
