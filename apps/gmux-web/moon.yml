@@ -2,7 +2,7 @@ language: javascript
 
 tasks:
   serve:
-    command: pnpm exec vite
+    command: pnpm exec vite --port 16134
     deps:
       - protocol:build
     preset: server

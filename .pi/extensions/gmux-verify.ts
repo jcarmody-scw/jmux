@@ -25,10 +25,10 @@ import { Type } from "typebox";
 const SCENARIOS = {
 	frontend: {
 		daemonPort: 8790,
-		appPort: 5173,
+		appPort: 16134,
 		tokenGlob: "gmux",
 		tokenExclude: "gmux-dev" as string | null,
-		startCmd: "just dev-frontend" as string | null,
+		startCmd: "./node_modules/.bin/moon run gmux-web:serve" as string | null,
 		daemonTimeoutMs: 20_000,
 	},
 	full: {
@@ -36,7 +36,7 @@ const SCENARIOS = {
 		appPort: 5173,
 		tokenGlob: "gmux-dev",
 		tokenExclude: null as string | null,
-		startCmd: "just dev" as string | null,
+		startCmd: "./node_modules/.bin/moon run gmuxd:dev" as string | null,
 		daemonTimeoutMs: 60_000, // includes Go build time
 	},
 	prod: {
@@ -69,9 +69,9 @@ function isDaemonUp(port: number): boolean {
 	}
 }
 
-function isViteUp(): boolean {
+function isViteUp(port: number): boolean {
 	try {
-		execSync("curl -sf http://localhost:5173 -o /dev/null", {
+		execSync(`curl -sf http://localhost:${port} -o /dev/null`, {
 			timeout: 2000,
 			stdio: "pipe",
 		});
@@ -280,26 +280,26 @@ export default function (pi: ExtensionAPI) {
 
 			// ── 2. Vite (frontend + full only) ────────────────────────────────────
 
-			if (cfg.appPort === 5173) {
-				if (!isViteUp()) {
+			if (cfg.appPort !== cfg.daemonPort) {
+				if (!isViteUp(cfg.appPort)) {
 					if (params.scenario === "frontend" && !justStarted) {
 						// Daemon was already up but vite wasn't started — start it separately.
-						info("Vite not running. Starting: just dev-frontend");
-						spawnBackground("just dev-frontend", repoRoot);
+						info(`Vite not running. Starting: ${cfg.startCmd}`);
+						spawnBackground(cfg.startCmd!, repoRoot);
 					}
-					// For 'full', just dev (already launched above) also starts vite.
+					// For 'full', moon run gmuxd:dev (already launched above) also starts vite.
 					// In either case, wait for it.
-					info("Waiting for vite on :5173 (up to 20s)…");
-					const viteReady = await pollUntil(() => isViteUp(), 20_000);
+					info(`Waiting for vite on :${cfg.appPort} (up to 20s)…`);
+					const viteReady = await pollUntil(() => isViteUp(cfg.appPort), 20_000);
 					if (!viteReady) {
 						return fail(
-							"Vite did not come up on :5173 within 20s. " +
-								"Check the dev stack output for errors.",
+							`Vite did not come up on :${cfg.appPort} within 20s. ` +
+							"Check the dev stack output for errors.",
 						);
 					}
-					ok("Vite up on :5173");
+					ok(`Vite up on :${cfg.appPort}`);
 				} else {
-					ok("Vite up on :5173");
+					ok(`Vite up on :${cfg.appPort}`);
 				}
 			}
 
