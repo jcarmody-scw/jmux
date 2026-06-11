@@ -120,9 +120,10 @@ describe('reduceItems — multi-turn overwrite bug', () => {
     const turn1Blocks = [{ type: 'text', text: 'turn 1 response' }]
     const turn2Blocks = [{ type: 'text', text: 'turn 2 response' }]
 
-    // Start with a user item (agent runs after a user prompt)
+    // Real SDK sequence: agent_start → turn_start → messages → turn_start → messages → agent_end
     let items = reduceItems([], { type: 'session_ready', model: 'test-model' })
     items = reduceItems(items, { type: 'agent_start' })
+    items = reduceItems(items, { type: 'turn_start' })
     items = reduceItems(items, { type: 'message_update', message: { content: turn1Blocks } })
     items = reduceItems(items, { type: 'message_end' })
     items = reduceItems(items, { type: 'turn_start' })
@@ -145,6 +146,7 @@ describe('reduceItems — multi-turn overwrite bug', () => {
     const turn2Blocks = [{ type: 'text', text: 'done' }]
 
     let items = reduceItems([], { type: 'agent_start' })
+    items = reduceItems(items, { type: 'turn_start' })
     items = reduceItems(items, { type: 'message_update', message: { content: turn1Blocks } })
     items = reduceItems(items, { type: 'message_end' })
     items = reduceItems(items, { type: 'turn_start' })

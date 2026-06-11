@@ -172,10 +172,9 @@ export function reduceItems(items: RenderItem[], ev: Record<string, unknown>): R
     case 'auto_retry_end': {
       return [...items, { kind: 'system', subtype: 'info', text: getSystemText(ev) }]
     }
-    case 'agent_start':
     case 'turn_start': {
-      // Each agent_start and each turn_start creates a fresh AssistantItem.
-      // This prevents multi-turn message_update events from overwriting each other.
+      // Each turn_start creates a fresh AssistantItem.
+      // agent_start does not — turn_start always follows it before any message events.
       return [...items, { kind: 'assistant', blocks: [], toolExecMap: {}, complete: false }]
     }
     case 'message_update': {
