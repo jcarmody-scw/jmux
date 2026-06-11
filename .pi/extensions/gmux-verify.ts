@@ -184,7 +184,12 @@ function selectInstance(
 ): DiscoveredInstance | null {
 	if (scenario === "full") {
 		// Match by started_in so worktree instances are found without port arithmetic.
-		return instances.find((i) => i.topology.started_in === repoRoot) ?? null;
+		// The daemon may be started from a subdirectory (e.g. services/gmuxd), so
+		// check if started_in equals repoRoot or lives under it.
+		return instances.find((i) =>
+			i.topology.started_in === repoRoot ||
+			i.topology.started_in.startsWith(repoRoot + "/")
+		) ?? null;
 	}
 	// frontend + prod: prod daemon
 	return instances.find((i) => i.topology.instance === PROD_INSTANCE) ?? null;
