@@ -2,6 +2,7 @@
 // Connects to /ws/{session.id}, renders streaming events as a message list.
 import { type Session } from './types'
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks'
+import type { RefObject } from 'preact'
 
 // ---------------------------------------------------------------------------
 // Content block types (mirroring SDK AgentMessage content)
@@ -243,6 +244,8 @@ export function reduceItems(items: RenderItem[], ev: Record<string, unknown>): R
 
 const WS_BASE_MS = 500
 const WS_CAP_MS = 8000
+// Auto-scroll threshold: only scroll to bottom when within this many px of the bottom.
+const SCROLL_NEAR_BOTTOM_PX = 60
 
 function wsUrl(sessionId: string): string {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -299,42 +302,114 @@ function ThinkingBlock({ block }: { block: ThinkingContent }) {
   )
 }
 
-function AssistantItemView({ item }: { item: AssistantItem }) {
+/**
+ * Collapsible container wrapping one SDK turn (one AssistantItem).
+ * - Prose (text blocks) is always visible regardless of collapse state.
+ * - Collapse only hides tool call rows.
+ * - Collapsed summary: ▶ read ×2 · bash ×1
+ * - NOTE: no overflow property — would break position:sticky on ancestor user prompt.
+ */
+function TurnBlock({ item }: { item: AssistantItem }) {
+  const [expanded, setExpanded] = useState(true)
+
+  // Count tool calls by name for collapsed summary
+  const toolCounts: Record<string, number> = {}
+  for (const block of item.blocks) {
+    if (block.type === 'toolCall') {
+      toolCounts[block.name] = (toolCounts[block.name] ?? 0) + 1
+    }
+  }
+  const hasTools = Object.keys(toolCounts).length > 0
+  const summaryText = Object.entries(toolCounts)
+    .map(([name, count]) => `${name} ×${count}`)
+    .join(' · ')
+
   return (
-    <div class="pi-session-item pi-session-item-assistant">
-      {item.blocks.map((block, i) => {
-        if (block.type === 'text') {
-          return <div key={i} class="pi-session-text">{block.text}</div>
-        }
-        if (block.type === 'thinking') {
-          return <ThinkingBlock key={i} block={block} />
-        }
-        if (block.type === 'toolCall') {
-          return <ToolBlock key={i} block={block} exec={item.toolExecMap[block.id]} />
-        }
-        return null
-      })}
-      {!item.complete && <span class="pi-session-cursor">▌</span>}
+    <div class="pi-session-turn-block">
+      {hasTools && (
+        <button
+          class={`pi-session-turn-block-toggle${expanded ? '' : ' pi-session-turn-block-collapsed'}`}
+          type="button"
+          onClick={() => setExpanded(e => !e)}
+          aria-label={expanded ? 'collapse turn' : 'expand turn'}
+        >
+          {expanded ? '▾' : `▶ ${summaryText}`}
+        </button>
+      )}
+      <div class="pi-session-item pi-session-item-assistant">
+        {item.blocks.map((block, i) => {
+          if (block.type === 'text') {
+            return <div key={i} class="pi-session-text">{block.text}</div>
+          }
+          if (block.type === 'thinking') {
+            return <ThinkingBlock key={i} block={block} />
+          }
+          if (block.type === 'toolCall') {
+            // Tool rows are hidden when collapsed; prose always visible
+            if (!expanded) return null
+            return <ToolBlock key={i} block={block} exec={item.toolExecMap[block.id]} />
+          }
+          return null
+        })}
+        {!item.complete && <span class="pi-session-cursor">▌</span>}
+      </div>
     </div>
   )
 }
 
-function RenderItemView({ item }: { item: RenderItem }) {
+function RenderItemView({ item, isSticky }: { item: RenderItem; isSticky?: boolean }) {
   if (item.kind === 'user') {
     return (
-      <div class="pi-session-item pi-session-item-user">
+      <div class={`pi-session-item pi-session-item-user${isSticky ? ' pi-session-sticky-prompt' : ''}`}>
         <span class="pi-session-prompt-prefix">&gt; </span>{item.text}
       </div>
     )
   }
   if (item.kind === 'assistant') {
-    return <AssistantItemView item={item} />
+    return <TurnBlock item={item} />
   }
   // system
   return (
     <div class={`pi-session-item pi-session-item-system pi-session-item-system-${item.subtype}`}>
       · {item.text}
     </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Jump-to-bottom for pi-session (uses a messages container ref, not WTerm)
+// ---------------------------------------------------------------------------
+
+function PiJumpToBottom({ containerRef }: { containerRef: RefObject<HTMLDivElement> }) {
+  const [atBottom, setAtBottom] = useState(true)
+
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const update = () => {
+      setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < SCROLL_NEAR_BOTTOM_PX)
+    }
+    update()
+    el.addEventListener('scroll', update, { passive: true })
+    return () => el.removeEventListener('scroll', update)
+    // containerRef is a stable ref object; effect runs once after mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  if (atBottom) return null
+  return (
+    <button
+      type="button"
+      class="jump-to-bottom"
+      aria-label="Jump to bottom"
+      title="Jump to bottom"
+      onClick={() => {
+        const el = containerRef.current
+        if (el) el.scrollTop = el.scrollHeight
+      }}
+    >
+      ↓
+    </button>
   )
 }
 
@@ -356,11 +431,23 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
   const wsRef = useRef<WebSocket | null>(null)
   const retryCountRef = useRef(0)
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const messagesEndRef = useRef<HTMLDivElement>(null)
+  const messagesRef = useRef<HTMLDivElement>(null)
 
-  // Auto-scroll on new items
+  // Derive: index of the last user item — sticky while streaming.
+  // This is the prompt that triggered the active agent run.
+  const lastUserIndex: number = streaming
+    ? items.reduce((idx: number, item, i) => (item.kind === 'user' ? i : idx), -1)
+    : -1
+
+  // Conditional auto-scroll: only scroll to bottom when already near the bottom.
+  // If the user has scrolled up, new content appends silently.
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const el = messagesRef.current
+    if (!el) return
+    const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    if (distFromBottom < SCROLL_NEAR_BOTTOM_PX) {
+      el.scrollTop = el.scrollHeight
+    }
   }, [items])
 
   // Stable event dispatcher — uses reduceItems for all items changes
@@ -471,9 +558,17 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
       class="pi-session"
       style={{ display: isActive ? 'flex' : 'none' }}
     >
-      <div class="pi-session-messages">
-        {items.map((item, i) => <RenderItemView key={i} item={item} />)}
-        <div ref={messagesEndRef} />
+      <div class="pi-session-messages-wrap">
+        <div class="pi-session-messages" ref={messagesRef}>
+          {items.map((item, i) => (
+            <RenderItemView
+              key={i}
+              item={item}
+              isSticky={streaming && i === lastUserIndex}
+            />
+          ))}
+        </div>
+        <PiJumpToBottom containerRef={messagesRef} />
       </div>
 
       <div class="pi-session-input-bar">
