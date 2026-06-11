@@ -19,6 +19,7 @@ import (
 	"regexp"
 	"runtime/debug"
 	"sort"
+	"strconv"
 	"runtime"
 	"strings"
 	"sync"
@@ -59,6 +60,14 @@ import (
 // For dev builds (no ldflags), init() enriches it with vcs date+hash.
 var version = "dev"
 
+// vcsRevision, vcsModified, vcsTimeStr are populated from debug.ReadBuildInfo in init().
+// They are exposed via the /v1/health topology block.
+var (
+	vcsRevision string
+	vcsModified bool
+	vcsTimeStr  string
+)
+
 func init() {
 	if version != "dev" {
 		return
@@ -68,14 +77,20 @@ func init() {
 		return
 	}
 	var rev, vcsTime string
+	var modified bool
 	for _, s := range info.Settings {
 		switch s.Key {
 		case "vcs.revision":
 			rev = s.Value
 		case "vcs.time":
 			vcsTime = s.Value
+		case "vcs.modified":
+			modified = s.Value == "true"
 		}
 	}
+	vcsRevision = rev
+	vcsModified = modified
+	vcsTimeStr = vcsTime
 	if rev == "" {
 		return
 	}
@@ -90,6 +105,49 @@ func init() {
 		}
 	}
 	version = "dev." + hash
+}
+
+
+// buildTopology assembles the topology block included in /v1/health responses.
+// It is a pure function so it can be unit-tested independently of the HTTP handler.
+// stateDir is the gmux state directory (e.g. ~/.local/state/gmux).
+// devProxy is the value of $GMUXD_DEV_PROXY, empty in production.
+func buildTopology(tcpAddr, stateDir, startedIn, devProxy string) map[string]any {
+	// Derive instance name from the stateDir layout.
+	// Prod:         ~/.local/state/gmux                    → "gmux"
+	// Dev default:  ~/.local/state/gmux-dev/state/gmux     → "gmux-dev"
+	// Dev worktree: ~/.local/state/gmux-dev-abc/state/gmux → "gmux-dev-abc"
+	instance := filepath.Base(stateDir)
+	// When XDG_STATE_HOME is set, stateDir is XDG_STATE_HOME/gmux so the
+	// distinguishing component is two levels up (grandparent of stateDir).
+	grandparent := filepath.Base(filepath.Dir(filepath.Dir(stateDir)))
+	if strings.HasPrefix(grandparent, "gmux-") {
+		instance = grandparent
+	}
+
+	// Parse listen port from tcpAddr ("host:port" or ":port").
+	var listenPort int
+	if _, portStr, err := net.SplitHostPort(tcpAddr); err == nil {
+		if p, err := strconv.Atoi(portStr); err == nil {
+			listenPort = p
+		}
+	}
+
+	topo := map[string]any{
+		"instance":   instance,
+		"listen_port": listenPort,
+		"state_dir":  stateDir,
+		"started_in": startedIn,
+		"vcs": map[string]any{
+			"revision": vcsRevision,
+			"modified": vcsModified,
+			"time":     vcsTimeStr,
+		},
+	}
+	if devProxy != "" {
+		topo["dev_proxy"] = devProxy
+	}
+	return topo
 }
 
 type LaunchConfig struct {
@@ -645,6 +703,7 @@ func serve(stderr io.Writer) int {
 
 	// State directory for persistent files (projects.json, auth-token, etc).
 	stateDir := paths.StateDir()
+	startedIn, _ := os.Getwd()
 
 	// Project manager handles concurrent access to projects.json and
 	// auto-assignment of sessions to projects.
@@ -778,6 +837,8 @@ func serve(stderr io.Writer) int {
 		if discovery.ExpectedRunnerHash != "" {
 			data["runner_hash"] = discovery.ExpectedRunnerHash
 		}
+		// Topology: self-describing dev/prod instance info for agent tooling.
+		data["topology"] = buildTopology(tcpAddr, stateDir, startedIn, os.Getenv("GMUXD_DEV_PROXY"))
 
 		// Launchers: what adapters can be launched on this host.
 		data["default_launcher"] = launchConfig.DefaultLauncher
