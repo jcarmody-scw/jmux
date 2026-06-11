@@ -286,7 +286,14 @@ function ToolBlock({ block, exec }: { block: ToolCallContent; exec: ToolExec | u
   )
 }
 
-function ThinkingBlock({ block }: { block: ThinkingContent }) {
+/** Extract model + thinkingLevel from a session_ready event. Exported for tests. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function parseSessionInfo(ev: any): { model: string; thinkingLevel: string } | null {
+  if (ev?.type !== 'session_ready') return null
+  return { model: String(ev.model ?? ''), thinkingLevel: String(ev.thinkingLevel ?? '') }
+}
+
+export function ThinkingBlock({ block, forceOpen }: { block: ThinkingContent; forceOpen?: boolean }) {
   const [open, setOpen] = useState(false)
   return (
     <div class="pi-session-thinking">
@@ -297,7 +304,7 @@ function ThinkingBlock({ block }: { block: ThinkingContent }) {
       >
         {open ? '▾' : '▸'} ⟨thinking⟩
       </button>
-      {open && (
+      {(forceOpen || open) && (
         <div class="pi-session-thinking-body">
           {block.redacted ? '(redacted)' : block.thinking}
         </div>
@@ -313,7 +320,7 @@ function ThinkingBlock({ block }: { block: ThinkingContent }) {
  * - Collapsed summary: ▶ read ×2 · bash ×1
  * - NOTE: no overflow property — would break position:sticky on ancestor user prompt.
  */
-function TurnBlock({ item }: { item: AssistantItem }) {
+function TurnBlock({ item, expandAllThinking }: { item: AssistantItem; expandAllThinking?: boolean }) {
   const [expanded, setExpanded] = useState(true)
 
   // Count tool calls by name for collapsed summary
@@ -346,7 +353,7 @@ function TurnBlock({ item }: { item: AssistantItem }) {
             return <div key={i} class="pi-session-text">{block.text}</div>
           }
           if (block.type === 'thinking') {
-            return <ThinkingBlock key={i} block={block} />
+            return <ThinkingBlock key={i} block={block} forceOpen={expandAllThinking} />
           }
           if (block.type === 'toolCall') {
             // Tool rows are hidden when collapsed; prose always visible
@@ -361,7 +368,7 @@ function TurnBlock({ item }: { item: AssistantItem }) {
   )
 }
 
-function RenderItemView({ item, isSticky }: { item: RenderItem; isSticky?: boolean }) {
+function RenderItemView({ item, isSticky, expandAllThinking }: { item: RenderItem; isSticky?: boolean; expandAllThinking?: boolean }) {
   if (item.kind === 'user') {
     return (
       <div class={`pi-session-item pi-session-item-user${isSticky ? ' pi-session-sticky-prompt' : ''}`}>
@@ -370,7 +377,7 @@ function RenderItemView({ item, isSticky }: { item: RenderItem; isSticky?: boole
     )
   }
   if (item.kind === 'assistant') {
-    return <TurnBlock item={item} />
+    return <TurnBlock item={item} expandAllThinking={expandAllThinking} />
   }
   // system
   return (
@@ -431,6 +438,8 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
   const [streaming, setStreaming] = useState(false)
   const [wsState, setWsState] = useState<'connecting' | 'open' | 'lost'>('connecting')
   const [inputText, setInputText] = useState('')
+  const [sessionInfo, setSessionInfo] = useState<{ model: string; thinkingLevel: string } | null>(null)
+  const [expandAllThinking, setExpandAllThinking] = useState(false)
 
   const wsRef = useRef<WebSocket | null>(null)
   const retryCountRef = useRef(0)
@@ -455,7 +464,12 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
   }, [items])
 
   // Stable event dispatcher — uses reduceItems for all items changes
+  // Stable event dispatcher — uses reduceItems for all items changes
   const dispatchEvent = useCallback((ev: Record<string, unknown>) => {
+    // Capture session info from session_ready before reducer
+    const info = parseSessionInfo(ev)
+    if (info) setSessionInfo(info)
+
     // Items update via pure reducer
     setItems(prev => reduceItems(prev, ev))
 
@@ -576,11 +590,34 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
     }
   }, [inputText, sendMessage])
 
+  // Derive: whether any assistant item contains a thinking block
+  const hasThinking = items.some(
+    item => item.kind === 'assistant' && (item as AssistantItem).blocks.some(b => b.type === 'thinking')
+  )
+
   return (
     <div
       class="pi-session"
       style={{ display: isActive ? 'flex' : 'none' }}
     >
+      {(sessionInfo || hasThinking) && (
+        <div class="pi-session-header">
+          {sessionInfo && (
+            <span class="pi-session-model-badge">
+              {sessionInfo.model}{sessionInfo.thinkingLevel ? ` · ${sessionInfo.thinkingLevel}` : ''}
+            </span>
+          )}
+          {hasThinking && (
+            <button
+              class="pi-session-expand-thinking"
+              type="button"
+              onClick={() => setExpandAllThinking(e => !e)}
+            >
+              {expandAllThinking ? '⟨thinking⟩ ▾' : '⟨thinking⟩ ▸'}
+            </button>
+          )}
+        </div>
+      )}
       <div class="pi-session-messages-wrap">
         <div class="pi-session-messages" ref={messagesRef}>
           {items.map((item, i) => (
@@ -588,6 +625,7 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
               key={i}
               item={item}
               isSticky={streaming && i === lastUserIndex}
+              expandAllThinking={expandAllThinking}
             />
           ))}
         </div>
