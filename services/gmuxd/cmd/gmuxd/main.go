@@ -2518,6 +2518,14 @@ func serve(stderr io.Writer) int {
 	}
 	tcpAddr = resolved
 
+	// Parse listen port for port-scoped auth cookie.
+	var tcpListenPort int
+	if _, portStr, err2 := net.SplitHostPort(tcpAddr); err2 == nil {
+		if p, err2 := strconv.Atoi(portStr); err2 == nil {
+			tcpListenPort = p
+		}
+	}
+
 	tok, err := authtoken.LoadOrCreate(stateDir)
 	if err != nil {
 		log.Fatalf("FATAL: %v", err)
@@ -2571,7 +2579,7 @@ func serve(stderr io.Writer) int {
 
 	// ── TCP listener (always, token-authenticated) ──
 
-	authedHandler := netauth.Middleware(authToken, mux)
+	authedHandler := netauth.MiddlewareWithPort(authToken, tcpListenPort, mux)
 	tcpSrv = &http.Server{Addr: tcpAddr, Handler: authedHandler}
 
 	tcpLn, err := net.Listen("tcp", tcpAddr)
