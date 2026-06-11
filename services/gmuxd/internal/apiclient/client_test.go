@@ -433,22 +433,31 @@ func TestDialWS_UnauthorizedFails(t *testing.T) {
 }
 
 func TestDialWS_HTTPSUpgradesToWSS(t *testing.T) {
-	// Cover the scheme rewrite paths in DialWS without actually
-	// standing up TLS. We can't dial wss://, but we can verify that a
-	// broken http-prefix URL fails with a wss-related error message
-	// indirectly via the baseURL.
-	c := New("https://invalid.invalid:9/")
+	// Verify that DialWS rewrites https:// → wss:// before dialing.
+	// Strategy: start a plain-text httptest server, then pass its address
+	// to the client as an https:// URL. DialWS must rewrite to wss:// and
+	// attempt TLS — which fails on a plain-text server. If the rewrite did
+	// NOT happen the client would try http→ws and might succeed or fail
+	// differently; either way the error would contain "http://" or "ws://".
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	// Swap http:// → https:// to trigger the scheme-rewrite path.
+	httpsURL := "https://" + strings.TrimPrefix(ts.URL, "http://")
+	c := New(httpsURL)
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 	_, err := c.DialWS(ctx, "sess")
 	if err == nil {
-		t.Fatal("expected error")
+		t.Fatal("expected error dialing wss:// over plain-text server")
 	}
-	// We expect the dial to attempt wss://; the error message from
-	// nhooyr.io/websocket wraps the URL string. If the scheme rewrite
-	// didn't happen the error would mention "http:" instead.
-	if !strings.Contains(err.Error(), "wss:") && !strings.Contains(err.Error(), "invalid.invalid") {
-		t.Errorf("err = %v, expected to contain wss: or target host", err)
+	// The error must NOT mention the non-TLS schemes — that would mean the
+	// rewrite did not happen.
+	msg := err.Error()
+	if strings.Contains(msg, "http://") {
+		t.Errorf("scheme was not rewritten to wss: err = %v", err)
 	}
 }
 

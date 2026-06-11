@@ -45,7 +45,7 @@ func TestNotifyNewSessionDoesNotStealTitleFromOldPiFile(t *testing.T) {
 		SocketPath: "/tmp/gmux-sessions/sess-new.sock",
 	})
 
-	fm := NewFileMonitor(s)
+	fm := NewFileMonitorWithAttributions(s, nil)
 	if fm.watcher != nil {
 		defer fm.watcher.Close()
 	}
@@ -78,7 +78,7 @@ func TestActiveFileTracking(t *testing.T) {
 		StartedAt: time.Now().UTC().Format(time.RFC3339),
 	})
 
-	fm := NewFileMonitor(s)
+	fm := NewFileMonitorWithAttributions(s, nil)
 	if fm.watcher != nil {
 		defer fm.watcher.Close()
 	}
@@ -179,6 +179,7 @@ func setupPiFileMonitor(t *testing.T) (*FileMonitor, *store.Store, string) {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("PI_CODING_AGENT_DIR", "") // prevent host env from redirecting session dirs
 
 	cwd := "/home/user/dev/project"
 	pi := adapters.NewPi()
@@ -197,7 +198,7 @@ func setupPiFileMonitor(t *testing.T) (*FileMonitor, *store.Store, string) {
 		SocketPath: "/tmp/fake.sock",
 	})
 
-	fm := NewFileMonitor(s)
+	fm := NewFileMonitorWithAttributions(s, nil)
 	if fm.watcher != nil {
 		defer fm.watcher.Close()
 		fm.watcher.Close()
@@ -628,7 +629,7 @@ func TestAttributionAcrossDirectories(t *testing.T) {
 		SocketPath: "/tmp/fake.sock",
 	})
 
-	fm := NewFileMonitor(s)
+	fm := NewFileMonitorWithAttributions(s, nil)
 	if fm.watcher != nil {
 		fm.watcher.Close()
 		fm.watcher = nil
@@ -710,7 +711,7 @@ func TestRecentFileScanSkipsOldFiles(t *testing.T) {
 		SocketPath: "/tmp/fake.sock",
 	})
 
-	fm := NewFileMonitor(s)
+	fm := NewFileMonitorWithAttributions(s, nil)
 	if fm.watcher != nil {
 		defer fm.watcher.Close()
 	}
@@ -1000,7 +1001,7 @@ func setupClaudeFileMonitor(t *testing.T) (*FileMonitor, *store.Store, string) {
 		SocketPath: "/tmp/fake.sock",
 	})
 
-	fm := NewFileMonitor(s)
+	fm := NewFileMonitorWithAttributions(s, nil)
 	if fm.watcher != nil {
 		fm.watcher.Close()
 		fm.watcher = nil
@@ -1165,7 +1166,7 @@ func setupCodexFileMonitor(t *testing.T) (*FileMonitor, *store.Store, string) {
 		SocketPath: "/tmp/fake.sock",
 	})
 
-	fm := NewFileMonitor(s)
+	fm := NewFileMonitorWithAttributions(s, nil)
 	if fm.watcher != nil {
 		fm.watcher.Close()
 		fm.watcher = nil
