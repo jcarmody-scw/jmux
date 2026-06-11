@@ -546,6 +546,25 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
     ws.send(JSON.stringify({ type: 'abort' }))
   }, [])
 
+  // Dev helper: expose sendMessage on window for agent-browser eval.
+  // window.__gmuxSendMessage('text') sends a message to this session.
+  // window.__gmuxLaunchPiSdk(cwd) launches a new pi-sdk session (uses cookie auth).
+  useEffect(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const w = window as any
+    w.__gmuxSendMessage = (text: string) => sendMessage(text)
+    w.__gmuxLaunchPiSdk = (cwd: string) =>
+      fetch('/v1/launch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ launcher_id: 'pi-sdk', cwd }),
+      }).then(r => r.json())
+    return () => {
+      delete w.__gmuxSendMessage
+      delete w.__gmuxLaunchPiSdk
+    }
+  }, [sendMessage])
+
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()

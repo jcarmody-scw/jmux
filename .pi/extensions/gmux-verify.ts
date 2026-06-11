@@ -202,14 +202,18 @@ export default function (pi: ExtensionAPI) {
 			"Open a james-gmux app route in the browser for the given dev scenario.",
 			"Starts the dev stack if not running, finds the project slug from projects.json,",
 			"authenticates, and navigates.",
-			"scenario: 'frontend' (UI/CSS — prod daemon :8790 + vite :5173),",
+			"scenario: 'frontend' (UI/CSS — prod daemon :8790 + vite :16134),",
 			"'full' (Go changed — dev daemon :22226 + vite :5173),",
 			"'prod' (bug repro or post-install verify — prod daemon :8790 only).",
 			"route is the path after the slug, e.g. 'sessions' or '' for the project home.",
+			"After navigating, two window helpers are available via agent-browser eval:",
+			"  window.__gmuxLaunchPiSdk(cwd) — POST /v1/launch to create a pi-sdk session; returns {data:{session_id}, ok}.",
+			"  window.__gmuxSendMessage(text) — send a message to the currently open pi-sdk session (bypasses Preact input state).",
 		].join(" "),
 		promptGuidelines: [
 			"Always use gmux_verify instead of manually constructing TOKEN= commands or agent-browser navigate calls.",
-			"frontend: UI/React/CSS only, no Go changes. full: any .go file changed. prod: reproduce a bug or verify after just install.",
+			"frontend: UI/React/CSS only, no Go changes. full: any .go file changed. prod: reproduce a bug or verify after moon run :install.",
+			"To test a pi-sdk session: call gmux_verify to authenticate, then use agent-browser eval with __gmuxLaunchPiSdk and __gmuxSendMessage — no token or selector juggling needed.",
 		],
 		parameters: Type.Object({
 			scenario: Type.Union(
