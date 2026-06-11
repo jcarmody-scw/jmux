@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { extractBlocks, getSystemText } from './pi-session'
+import { extractBlocks, getSystemText, reduceItems, type AssistantItem } from './pi-session'
 
 // ---------------------------------------------------------------------------
 // extractBlocks
@@ -108,5 +108,80 @@ describe('getSystemText', () => {
   it('returns a non-empty string for unrecognised event types', () => {
     const text = getSystemText({ type: 'some_future_event' })
     expect(typeof text).toBe('string')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// reduceItems — multi-turn overwrite bug
+// ---------------------------------------------------------------------------
+
+describe('reduceItems — multi-turn overwrite bug', () => {
+  it('creates separate AssistantItems for each SDK turn', () => {
+    const turn1Blocks = [{ type: 'text', text: 'turn 1 response' }]
+    const turn2Blocks = [{ type: 'text', text: 'turn 2 response' }]
+
+    // Real SDK sequence: agent_start → turn_start → messages → turn_start → messages → agent_end
+    let items = reduceItems([], { type: 'session_ready', model: 'test-model' })
+    items = reduceItems(items, { type: 'agent_start' })
+    items = reduceItems(items, { type: 'turn_start' })
+    items = reduceItems(items, { type: 'message_update', message: { content: turn1Blocks } })
+    items = reduceItems(items, { type: 'message_end' })
+    items = reduceItems(items, { type: 'turn_start' })
+    items = reduceItems(items, { type: 'message_update', message: { content: turn2Blocks } })
+    items = reduceItems(items, { type: 'message_end' })
+    items = reduceItems(items, { type: 'agent_end', willRetry: false })
+
+    const assistantItems = items.filter(i => i.kind === 'assistant') as AssistantItem[]
+    expect(assistantItems).toHaveLength(2)
+
+    expect(assistantItems[0].blocks).toEqual(turn1Blocks)
+    expect(assistantItems[1].blocks).toEqual(turn2Blocks)
+
+    expect(assistantItems[0].complete).toBe(true)
+    expect(assistantItems[1].complete).toBe(true)
+  })
+
+  it('turn2 blocks do not overwrite turn1 blocks', () => {
+    const turn1Blocks = [{ type: 'toolCall', id: 'tc1', name: 'bash', arguments: {} }]
+    const turn2Blocks = [{ type: 'text', text: 'done' }]
+
+    let items = reduceItems([], { type: 'agent_start' })
+    items = reduceItems(items, { type: 'turn_start' })
+    items = reduceItems(items, { type: 'message_update', message: { content: turn1Blocks } })
+    items = reduceItems(items, { type: 'message_end' })
+    items = reduceItems(items, { type: 'turn_start' })
+    items = reduceItems(items, { type: 'message_update', message: { content: turn2Blocks } })
+
+    const assistantItems = items.filter(i => i.kind === 'assistant') as AssistantItem[]
+    // Without the fix, turn_start was ignored and message_update would overwrite
+    // the first AssistantItem's blocks with turn2Blocks.
+    expect(assistantItems).toHaveLength(2)
+    expect(assistantItems[0].blocks).toEqual(turn1Blocks)
+    expect(assistantItems[1].blocks).toEqual(turn2Blocks)
+  })
+})
+
+describe('reduceItems — message_end role guard', () => {
+  it('user message_end does not complete the turn block', () => {
+    // Sequence: turn_start → user message_start/end → assistant message_update
+    // The user message_end must not mark the turn block as complete.
+    let items = reduceItems([], { type: 'agent_start' })
+    items = reduceItems(items, { type: 'turn_start' })
+    items = reduceItems(items, { type: 'message_start', message: { role: 'user', content: [] } })
+    items = reduceItems(items, { type: 'message_end', message: { role: 'user', content: [] } })
+
+    const assistantItem = items.find(i => i.kind === 'assistant') as AssistantItem
+    expect(assistantItem).toBeDefined()
+    expect(assistantItem.complete).toBe(false)
+  })
+
+  it('assistant message_end marks the turn block complete', () => {
+    const blocks = [{ type: 'text', text: 'hello' }]
+    let items = reduceItems([], { type: 'turn_start' })
+    items = reduceItems(items, { type: 'message_update', message: { content: blocks } })
+    items = reduceItems(items, { type: 'message_end', message: { role: 'assistant', content: blocks } })
+
+    const assistantItem = items.find(i => i.kind === 'assistant') as AssistantItem
+    expect(assistantItem.complete).toBe(true)
   })
 })

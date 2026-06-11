@@ -2,6 +2,7 @@
 // Connects to /ws/{session.id}, renders streaming events as a message list.
 import { type Session } from './types'
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks'
+import type { RefObject } from 'preact'
 
 // ---------------------------------------------------------------------------
 // Content block types (mirroring SDK AgentMessage content)
@@ -51,7 +52,7 @@ interface UserItem {
   text: string
 }
 
-interface AssistantItem {
+export interface AssistantItem {
   kind: 'assistant'
   blocks: ContentBlock[]
   toolExecMap: ToolExecMap
@@ -66,7 +67,7 @@ interface SystemItem {
   text: string
 }
 
-type RenderItem = UserItem | AssistantItem | SystemItem
+export type RenderItem = UserItem | AssistantItem | SystemItem
 
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for tests)
@@ -106,11 +107,149 @@ export function getSystemText(event: any): string {
 }
 
 // ---------------------------------------------------------------------------
+// Helper: extract plain text from an RPC tool result/partial-result object.
+// RPC tool results have shape {content: [{type:'text',text:'...'}], details:{}}.
+// Falls back to string coercion for legacy plain-string results.
+// ---------------------------------------------------------------------------
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function extractResultText(r: any): string {
+  if (!r) return ''
+  if (typeof r === 'string') return r
+  if (Array.isArray(r.content)) {
+    return (r.content as Array<{type: string; text?: string}>)
+      .filter(b => b.type === 'text')
+      .map(b => b.text ?? '')
+      .join('')
+  }
+  return ''
+}
+
+// ---------------------------------------------------------------------------
+// Helper: update toolExecMap on the last AssistantItem
+// ---------------------------------------------------------------------------
+
+function updateLastAssistantToolExec(
+  prev: RenderItem[],
+  toolCallId: string,
+  update: ToolExec | ((existing: ToolExec | undefined) => ToolExec),
+): RenderItem[] {
+  const next = [...prev]
+  for (let i = next.length - 1; i >= 0; i--) {
+    if (next[i].kind === 'assistant') {
+      const cur = next[i] as AssistantItem
+      const existing = cur.toolExecMap[toolCallId]
+      const resolved = typeof update === 'function' ? update(existing) : update
+      next[i] = {
+        ...cur,
+        toolExecMap: { ...cur.toolExecMap, [toolCallId]: resolved },
+      }
+      return next
+    }
+  }
+  return prev
+}
+
+// ---------------------------------------------------------------------------
+// Pure items reducer (exported for tests)
+// ---------------------------------------------------------------------------
+
+/** Apply one SDK event to the items array, returning the new array. */
+export function reduceItems(items: RenderItem[], ev: Record<string, unknown>): RenderItem[] {
+  switch (ev.type) {
+    case 'session_ready': {
+      return [...items, { kind: 'system', subtype: 'ready', text: getSystemText(ev) }]
+    }
+    case 'error': {
+      return [...items, { kind: 'system', subtype: 'error', text: getSystemText(ev) }]
+    }
+    case 'warning': {
+      return [...items, { kind: 'system', subtype: 'warning', text: getSystemText(ev) }]
+    }
+    case 'compaction_start':
+    case 'compaction_end':
+    case 'auto_retry_start':
+    case 'auto_retry_end': {
+      return [...items, { kind: 'system', subtype: 'info', text: getSystemText(ev) }]
+    }
+    case 'turn_start': {
+      // Each turn_start creates a fresh AssistantItem.
+      // agent_start does not — turn_start always follows it before any message events.
+      return [...items, { kind: 'assistant', blocks: [], toolExecMap: {}, complete: false }]
+    }
+    case 'message_update': {
+      const blocks = extractBlocks(ev.message)
+      const next = [...items]
+      for (let i = next.length - 1; i >= 0; i--) {
+        if (next[i].kind === 'assistant') {
+          const cur = next[i] as AssistantItem
+          next[i] = { ...cur, blocks }
+          return next
+        }
+      }
+      // No existing assistant item — create one (fallback)
+      return [...items, { kind: 'assistant', blocks, toolExecMap: {}, complete: false }]
+    }
+    case 'message_end': {
+      // Only mark the last AssistantItem complete for assistant message_end.
+      // User message_end arrives before the assistant turn and must not
+      // prematurely complete the empty turn block.
+      const msg = ev.message as { role?: string } | undefined
+      if (msg?.role === 'user') return items
+      const next = [...items]
+      for (let i = next.length - 1; i >= 0; i--) {
+        if (next[i].kind === 'assistant') {
+          const cur = next[i] as AssistantItem
+          next[i] = { ...cur, complete: true }
+          return next
+        }
+      }
+      return items
+    }
+    case 'tool_execution_start': {
+      const exec: ToolExec = {
+        toolCallId: String(ev.toolCallId),
+        toolName: String(ev.toolName),
+        args: (ev.args as Record<string, unknown>) ?? {},
+        output: '',
+        done: false,
+        isError: false,
+      }
+      return updateLastAssistantToolExec(items, exec.toolCallId, exec)
+    }
+    case 'tool_execution_update': {
+      const toolCallId = String(ev.toolCallId)
+      const partial = extractResultText(ev.partialResult)
+      return updateLastAssistantToolExec(items, toolCallId, existing => ({
+        ...(existing ?? { toolCallId, toolName: '', args: {}, output: '', done: false, isError: false }),
+        output: partial,
+      }))
+    }
+    case 'tool_execution_end': {
+      const toolCallId = String(ev.toolCallId)
+      const resultStr = extractResultText(ev.result)
+      return updateLastAssistantToolExec(items, toolCallId, existing => ({
+        ...(existing ?? { toolCallId, toolName: '', args: {}, output: '', done: false, isError: false }),
+        output: resultStr,
+        done: true,
+        isError: Boolean(ev.isError),
+      }))
+    }
+    // agent_end, queue_update, session_info_changed, thinking_level_changed, turn_end,
+    // message_start: no items change
+    default:
+      return items
+  }
+}
+
+// ---------------------------------------------------------------------------
 // WebSocket reconnect logic
 // ---------------------------------------------------------------------------
 
 const WS_BASE_MS = 500
 const WS_CAP_MS = 8000
+// Auto-scroll threshold: only scroll to bottom when within this many px of the bottom.
+const SCROLL_NEAR_BOTTOM_PX = 60
 
 function wsUrl(sessionId: string): string {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -167,42 +306,114 @@ function ThinkingBlock({ block }: { block: ThinkingContent }) {
   )
 }
 
-function AssistantItemView({ item }: { item: AssistantItem }) {
+/**
+ * Collapsible container wrapping one SDK turn (one AssistantItem).
+ * - Prose (text blocks) is always visible regardless of collapse state.
+ * - Collapse only hides tool call rows.
+ * - Collapsed summary: ▶ read ×2 · bash ×1
+ * - NOTE: no overflow property — would break position:sticky on ancestor user prompt.
+ */
+function TurnBlock({ item }: { item: AssistantItem }) {
+  const [expanded, setExpanded] = useState(true)
+
+  // Count tool calls by name for collapsed summary
+  const toolCounts: Record<string, number> = {}
+  for (const block of item.blocks) {
+    if (block.type === 'toolCall') {
+      toolCounts[block.name] = (toolCounts[block.name] ?? 0) + 1
+    }
+  }
+  const hasTools = Object.keys(toolCounts).length > 0
+  const summaryText = Object.entries(toolCounts)
+    .map(([name, count]) => `${name} ×${count}`)
+    .join(' · ')
+
   return (
-    <div class="pi-session-item pi-session-item-assistant">
-      {item.blocks.map((block, i) => {
-        if (block.type === 'text') {
-          return <div key={i} class="pi-session-text">{block.text}</div>
-        }
-        if (block.type === 'thinking') {
-          return <ThinkingBlock key={i} block={block} />
-        }
-        if (block.type === 'toolCall') {
-          return <ToolBlock key={i} block={block} exec={item.toolExecMap[block.id]} />
-        }
-        return null
-      })}
-      {!item.complete && <span class="pi-session-cursor">▌</span>}
+    <div class="pi-session-turn-block">
+      {hasTools && (
+        <button
+          class={`pi-session-turn-block-toggle${expanded ? '' : ' pi-session-turn-block-collapsed'}`}
+          type="button"
+          onClick={() => setExpanded(e => !e)}
+          aria-label={expanded ? 'collapse turn' : 'expand turn'}
+        >
+          {expanded ? '▾' : `▶ ${summaryText}`}
+        </button>
+      )}
+      <div class="pi-session-item pi-session-item-assistant">
+        {item.blocks.map((block, i) => {
+          if (block.type === 'text') {
+            return <div key={i} class="pi-session-text">{block.text}</div>
+          }
+          if (block.type === 'thinking') {
+            return <ThinkingBlock key={i} block={block} />
+          }
+          if (block.type === 'toolCall') {
+            // Tool rows are hidden when collapsed; prose always visible
+            if (!expanded) return null
+            return <ToolBlock key={i} block={block} exec={item.toolExecMap[block.id]} />
+          }
+          return null
+        })}
+        {!item.complete && <span class="pi-session-cursor">▌</span>}
+      </div>
     </div>
   )
 }
 
-function RenderItemView({ item }: { item: RenderItem }) {
+function RenderItemView({ item, isSticky }: { item: RenderItem; isSticky?: boolean }) {
   if (item.kind === 'user') {
     return (
-      <div class="pi-session-item pi-session-item-user">
+      <div class={`pi-session-item pi-session-item-user${isSticky ? ' pi-session-sticky-prompt' : ''}`}>
         <span class="pi-session-prompt-prefix">&gt; </span>{item.text}
       </div>
     )
   }
   if (item.kind === 'assistant') {
-    return <AssistantItemView item={item} />
+    return <TurnBlock item={item} />
   }
   // system
   return (
     <div class={`pi-session-item pi-session-item-system pi-session-item-system-${item.subtype}`}>
       · {item.text}
     </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Jump-to-bottom for pi-session (uses a messages container ref, not WTerm)
+// ---------------------------------------------------------------------------
+
+function PiJumpToBottom({ containerRef }: { containerRef: RefObject<HTMLDivElement> }) {
+  const [atBottom, setAtBottom] = useState(true)
+
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const update = () => {
+      setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < SCROLL_NEAR_BOTTOM_PX)
+    }
+    update()
+    el.addEventListener('scroll', update, { passive: true })
+    return () => el.removeEventListener('scroll', update)
+    // containerRef is a stable ref object; effect runs once after mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  if (atBottom) return null
+  return (
+    <button
+      type="button"
+      class="jump-to-bottom"
+      aria-label="Jump to bottom"
+      title="Jump to bottom"
+      onClick={() => {
+        const el = containerRef.current
+        if (el) el.scrollTop = el.scrollHeight
+      }}
+    >
+      ↓
+    </button>
   )
 }
 
@@ -224,128 +435,44 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
   const wsRef = useRef<WebSocket | null>(null)
   const retryCountRef = useRef(0)
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const messagesEndRef = useRef<HTMLDivElement>(null)
+  const messagesRef = useRef<HTMLDivElement>(null)
 
-  // Auto-scroll on new items
+  // Derive: index of the last user item — sticky while streaming.
+  // This is the prompt that triggered the active agent run.
+  const lastUserIndex: number = streaming
+    ? items.reduce((idx: number, item, i) => (item.kind === 'user' ? i : idx), -1)
+    : -1
+
+  // Conditional auto-scroll: only scroll to bottom when already near the bottom.
+  // If the user has scrolled up, new content appends silently.
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const el = messagesRef.current
+    if (!el) return
+    const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    if (distFromBottom < SCROLL_NEAR_BOTTOM_PX) {
+      el.scrollTop = el.scrollHeight
+    }
   }, [items])
 
-  // Stable event dispatcher — mutates items state
+  // Stable event dispatcher — uses reduceItems for all items changes
   const dispatchEvent = useCallback((ev: Record<string, unknown>) => {
+    // Items update via pure reducer
+    setItems(prev => reduceItems(prev, ev))
+
+    // Streaming state management (not captured by reduceItems)
     switch (ev.type) {
-      case 'session_ready': {
-        setItems(prev => [...prev, {
-          kind: 'system',
-          subtype: 'ready',
-          text: getSystemText(ev),
-        }])
-        break
-      }
       case 'agent_start': {
         setStreaming(true)
-        setItems(prev => [...prev, {
-          kind: 'assistant',
-          blocks: [],
-          toolExecMap: {},
-          complete: false,
-        }])
-        break
-      }
-      case 'message_update': {
-        const blocks = extractBlocks(ev.message)
-        setItems(prev => {
-          const next = [...prev]
-          // find last assistant item
-          for (let i = next.length - 1; i >= 0; i--) {
-            if (next[i].kind === 'assistant') {
-              const cur = next[i] as AssistantItem
-              next[i] = { ...cur, blocks }
-              return next
-            }
-          }
-          // no existing assistant item — create one
-          return [...prev, { kind: 'assistant', blocks, toolExecMap: {}, complete: false }]
-        })
-        break
-      }
-      case 'message_end': {
-        setItems(prev => {
-          const next = [...prev]
-          for (let i = next.length - 1; i >= 0; i--) {
-            if (next[i].kind === 'assistant') {
-              const cur = next[i] as AssistantItem
-              next[i] = { ...cur, complete: true }
-              return next
-            }
-          }
-          return prev
-        })
         break
       }
       case 'agent_end': {
         if (!ev.willRetry) setStreaming(false)
         break
       }
-      case 'tool_execution_start': {
-        const exec: ToolExec = {
-          toolCallId: String(ev.toolCallId),
-          toolName: String(ev.toolName),
-          args: (ev.args as Record<string, unknown>) ?? {},
-          output: '',
-          done: false,
-          isError: false,
-        }
-        setItems(prev => updateLastAssistantToolExec(prev, exec.toolCallId, exec))
-        break
-      }
-      case 'tool_execution_update': {
-        const toolCallId = String(ev.toolCallId)
-        // partialResult is {content: [{type:'text',text:'...'}], details:{}} in RPC mode.
-        // The accumulated output replaces previous output on each update.
-        const partial = extractResultText(ev.partialResult)
-        setItems(prev => updateLastAssistantToolExec(prev, toolCallId, existing => ({
-          ...(existing ?? { toolCallId, toolName: '', args: {}, output: '', done: false, isError: false }),
-          output: partial,
-        })))
-        break
-      }
-      case 'tool_execution_end': {
-        const toolCallId = String(ev.toolCallId)
-        // result is {content: [{type:'text',text:'...'}], details:{}} in RPC mode.
-        const resultStr = extractResultText(ev.result)
-        setItems(prev => updateLastAssistantToolExec(prev, toolCallId, existing => ({
-          ...(existing ?? { toolCallId, toolName: '', args: {}, output: '', done: false, isError: false }),
-          output: resultStr,
-          done: true,
-          isError: Boolean(ev.isError),
-        })))
-        break
-      }
       case 'error': {
         setStreaming(false)
-        setItems(prev => [...prev, {
-          kind: 'system',
-          subtype: 'error',
-          text: getSystemText(ev),
-        }])
         break
       }
-      case 'warning':
-      case 'compaction_start':
-      case 'compaction_end':
-      case 'auto_retry_start':
-      case 'auto_retry_end': {
-        setItems(prev => [...prev, {
-          kind: 'system',
-          subtype: ev.type === 'warning' ? 'warning' : 'info',
-          text: getSystemText(ev),
-        }])
-        break
-      }
-      // ignored: queue_update, session_info_changed, thinking_level_changed, turn_start, turn_end, message_start
-      default:
-        break
     }
   }, [])
 
@@ -423,6 +550,25 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
     ws.send(JSON.stringify({ type: 'abort' }))
   }, [])
 
+  // Dev helper: expose sendMessage on window for agent-browser eval.
+  // window.__gmuxSendMessage('text') sends a message to this session.
+  // window.__gmuxLaunchPiSdk(cwd) launches a new pi-sdk session (uses cookie auth).
+  useEffect(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const w = window as any
+    w.__gmuxSendMessage = (text: string) => sendMessage(text)
+    w.__gmuxLaunchPiSdk = (cwd: string) =>
+      fetch('/v1/launch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ launcher_id: 'pi-sdk', cwd }),
+      }).then(r => r.json())
+    return () => {
+      delete w.__gmuxSendMessage
+      delete w.__gmuxLaunchPiSdk
+    }
+  }, [sendMessage])
+
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
@@ -435,9 +581,17 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
       class="pi-session"
       style={{ display: isActive ? 'flex' : 'none' }}
     >
-      <div class="pi-session-messages">
-        {items.map((item, i) => <RenderItemView key={i} item={item} />)}
-        <div ref={messagesEndRef} />
+      <div class="pi-session-messages-wrap">
+        <div class="pi-session-messages" ref={messagesRef}>
+          {items.map((item, i) => (
+            <RenderItemView
+              key={i}
+              item={item}
+              isSticky={streaming && i === lastUserIndex}
+            />
+          ))}
+        </div>
+        <PiJumpToBottom containerRef={messagesRef} />
       </div>
 
       <div class="pi-session-input-bar">
@@ -469,50 +623,6 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
       </div>
     </div>
   )
-}
-
-// ---------------------------------------------------------------------------
-// Helper: update toolExecMap on the last AssistantItem
-// ---------------------------------------------------------------------------
-// Helper: extract plain text from an RPC tool result/partial-result object.
-// RPC tool results have shape {content: [{type:'text',text:'...'}], details:{}}.
-// Falls back to string coercion for legacy plain-string results.
-// ---------------------------------------------------------------------------
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function extractResultText(r: any): string {
-  if (!r) return ''
-  if (typeof r === 'string') return r
-  if (Array.isArray(r.content)) {
-    return (r.content as Array<{type: string; text?: string}>)
-      .filter(b => b.type === 'text')
-      .map(b => b.text ?? '')
-      .join('')
-  }
-  return ''
-}
-
-// ---------------------------------------------------------------------------
-
-function updateLastAssistantToolExec(
-  prev: RenderItem[],
-  toolCallId: string,
-  update: ToolExec | ((existing: ToolExec | undefined) => ToolExec),
-): RenderItem[] {
-  const next = [...prev]
-  for (let i = next.length - 1; i >= 0; i--) {
-    if (next[i].kind === 'assistant') {
-      const cur = next[i] as AssistantItem
-      const existing = cur.toolExecMap[toolCallId]
-      const resolved = typeof update === 'function' ? update(existing) : update
-      next[i] = {
-        ...cur,
-        toolExecMap: { ...cur.toolExecMap, [toolCallId]: resolved },
-      }
-      return next
-    }
-  }
-  return prev
 }
 
 // ---------------------------------------------------------------------------

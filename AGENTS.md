@@ -45,8 +45,8 @@ messages directly. Rules that follow from this:
   the top of the release, right after Breaking.
 - **PRs use rebase merge**, not squash. Atomic commits on feature
   branches land on `main` as-is, so keep them clean before pushing. Use
-  `jj squash` / `jj split` / `jj describe` to fix up WIP commits
-  locally.
+  `git rebase -i` / `git commit --fixup` / `git commit --amend` to fix up
+  WIP commits locally.
 - **Prose highlights for a release** live in the open `release/next`
   PR body, between the `<!-- prose-start -->` and `<!-- prose-end -->`
   markers. The PR body is the single source of truth: edit it
@@ -75,7 +75,7 @@ Default to `frontend`. Use `full` only when Go source has changed.
 gmux_verify({ scenario: "frontend", route: "sessions" })
 ```
 
-For automated E2E tests, see `docs/e2e.md`. The Playwright suite manages its own
+For automated E2E tests, see `e2e/README.md`. The Playwright suite manages its own
 isolated daemon — do not mix it with the manual verification setups above.
 ## Other rules
 

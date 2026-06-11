@@ -3245,6 +3245,7 @@ a.home-host-link:hover {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  min-height: 0;
 }
 
 /* Shared item base */
@@ -3416,4 +3417,55 @@ a.home-host-link:hover {
 }
 .pi-session-ws-state-lost {
   color: var(--status-error);
+}
+
+/* Turn block — collapsible container for one SDK turn */
+/* NOTE: no overflow property here — would break position:sticky on user prompt */
+.pi-session-turn-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.pi-session-turn-block-toggle {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-family: 'Fira Code', monospace;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 1px 0;
+  text-align: left;
+  opacity: 0.55;
+  line-height: 1.4;
+  user-select: none;
+}
+.pi-session-turn-block-toggle:hover {
+  opacity: 0.9;
+}
+.pi-session-turn-block-collapsed {
+  opacity: 0.7;
+  color: var(--text-secondary);
+}
+.pi-session-turn-block-collapsed:hover {
+  opacity: 1;
+}
+
+/* Sticky user prompt — active (streaming) turn only */
+.pi-session-sticky-prompt {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg);
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
+/* Messages wrapper — provides relative positioning context for jump-to-bottom */
+.pi-session-messages-wrap {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
 }

@@ -25,10 +25,10 @@ import { Type } from "typebox";
 const SCENARIOS = {
 	frontend: {
 		daemonPort: 8790,
-		appPort: 5173,
+		appPort: 16134,
 		tokenGlob: "gmux",
 		tokenExclude: "gmux-dev" as string | null,
-		startCmd: "just dev-frontend" as string | null,
+		startCmd: "./node_modules/.bin/moon run gmux-web:serve" as string | null,
 		daemonTimeoutMs: 20_000,
 	},
 	full: {
@@ -36,7 +36,7 @@ const SCENARIOS = {
 		appPort: 5173,
 		tokenGlob: "gmux-dev",
 		tokenExclude: null as string | null,
-		startCmd: "just dev" as string | null,
+		startCmd: "./node_modules/.bin/moon run gmuxd:dev" as string | null,
 		daemonTimeoutMs: 60_000, // includes Go build time
 	},
 	prod: {
@@ -69,9 +69,9 @@ function isDaemonUp(port: number): boolean {
 	}
 }
 
-function isViteUp(): boolean {
+function isViteUp(port: number): boolean {
 	try {
-		execSync("curl -sf http://localhost:5173 -o /dev/null", {
+		execSync(`curl -sf http://localhost:${port} -o /dev/null`, {
 			timeout: 2000,
 			stdio: "pipe",
 		});
@@ -202,14 +202,18 @@ export default function (pi: ExtensionAPI) {
 			"Open a james-gmux app route in the browser for the given dev scenario.",
 			"Starts the dev stack if not running, finds the project slug from projects.json,",
 			"authenticates, and navigates.",
-			"scenario: 'frontend' (UI/CSS — prod daemon :8790 + vite :5173),",
+			"scenario: 'frontend' (UI/CSS — prod daemon :8790 + vite :16134),",
 			"'full' (Go changed — dev daemon :22226 + vite :5173),",
 			"'prod' (bug repro or post-install verify — prod daemon :8790 only).",
 			"route is the path after the slug, e.g. 'sessions' or '' for the project home.",
+			"After navigating, two window helpers are available via agent-browser eval:",
+			"  window.__gmuxLaunchPiSdk(cwd) — POST /v1/launch to create a pi-sdk session; returns {data:{session_id}, ok}.",
+			"  window.__gmuxSendMessage(text) — send a message to the currently open pi-sdk session (bypasses Preact input state).",
 		].join(" "),
 		promptGuidelines: [
 			"Always use gmux_verify instead of manually constructing TOKEN= commands or agent-browser navigate calls.",
-			"frontend: UI/React/CSS only, no Go changes. full: any .go file changed. prod: reproduce a bug or verify after just install.",
+			"frontend: UI/React/CSS only, no Go changes. full: any .go file changed. prod: reproduce a bug or verify after moon run :install.",
+			"To test a pi-sdk session: call gmux_verify to authenticate, then use agent-browser eval with __gmuxLaunchPiSdk and __gmuxSendMessage — no token or selector juggling needed.",
 		],
 		parameters: Type.Object({
 			scenario: Type.Union(
@@ -280,26 +284,26 @@ export default function (pi: ExtensionAPI) {
 
 			// ── 2. Vite (frontend + full only) ────────────────────────────────────
 
-			if (cfg.appPort === 5173) {
-				if (!isViteUp()) {
+			if (cfg.appPort !== cfg.daemonPort) {
+				if (!isViteUp(cfg.appPort)) {
 					if (params.scenario === "frontend" && !justStarted) {
 						// Daemon was already up but vite wasn't started — start it separately.
-						info("Vite not running. Starting: just dev-frontend");
-						spawnBackground("just dev-frontend", repoRoot);
+						info(`Vite not running. Starting: ${cfg.startCmd}`);
+						spawnBackground(cfg.startCmd!, repoRoot);
 					}
-					// For 'full', just dev (already launched above) also starts vite.
+					// For 'full', moon run gmuxd:dev (already launched above) also starts vite.
 					// In either case, wait for it.
-					info("Waiting for vite on :5173 (up to 20s)…");
-					const viteReady = await pollUntil(() => isViteUp(), 20_000);
+					info(`Waiting for vite on :${cfg.appPort} (up to 20s)…`);
+					const viteReady = await pollUntil(() => isViteUp(cfg.appPort), 20_000);
 					if (!viteReady) {
 						return fail(
-							"Vite did not come up on :5173 within 20s. " +
-								"Check the dev stack output for errors.",
+							`Vite did not come up on :${cfg.appPort} within 20s. ` +
+							"Check the dev stack output for errors.",
 						);
 					}
-					ok("Vite up on :5173");
+					ok(`Vite up on :${cfg.appPort}`);
 				} else {
-					ok("Vite up on :5173");
+					ok(`Vite up on :${cfg.appPort}`);
 				}
 			}
 

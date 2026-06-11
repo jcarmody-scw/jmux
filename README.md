@@ -169,15 +169,16 @@ graph TD
 
 ## Development
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for prerequisites and setup.
+**Prerequisites:** Node.js ≥ 20, pnpm ≥ 9, Go ≥ 1.22, watchexec (`brew install watchexec`).
 
 ```bash
 pnpm install      # JS dependencies + moon
-moon run :dev     # start all services with watch/HMR
+moon run :dev     # gmuxd (:22226) + vite (:5173) with HMR
 ```
 
-For manual verification (bug reproduction, fix confirmation, screenshots) and automated E2E tests see
-[docs/agent-verification.md](docs/agent-verification.md) and [docs/e2e.md](docs/e2e.md).
+Open **http://localhost:5173** for the dev UI. Vite proxies `/v1/*` and `/ws/*` to gmuxd.
+
+For manual verification and automated E2E tests see [AGENTS.md](AGENTS.md) and [e2e/README.md](e2e/README.md).
 
 ### Monorepo layout
 
@@ -207,21 +208,6 @@ graph TB
 | `services/gmuxd` | Go | Machine daemon — discovery, cache, WS proxy, embedded web UI |
 | `apps/gmux-web` | TypeScript/Preact | Browser UI — sidebar, terminal, header bar |
 | `packages/protocol` | TypeScript | Shared schemas, zod-validated |
-| `apps/website` | Astro/Starlight | Documentation site |
-
-## Docs
-
-Documentation lives in the [website](apps/website/src/content/docs/):
-
-* [Architecture](apps/website/src/content/docs/architecture.md) — runtime structure (gmux, gmuxd, web UI)
-
-* [Session Schema](apps/website/src/content/docs/develop/session-schema.md) — metadata model
-
-* [Adapter Architecture](apps/website/src/content/docs/develop/adapter-architecture.md) — how adapters work
-
-* [Security](apps/website/src/content/docs/security.md) — threat model and safeguards
-
-* [Remote Access](apps/website/src/content/docs/remote-access.md) — tailscale setup
 
 ## License
 
