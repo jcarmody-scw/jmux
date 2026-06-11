@@ -49,6 +49,7 @@ import (
 	"github.com/gmuxapp/gmux/services/gmuxd/internal/unixipc"
 	"github.com/gmuxapp/gmux/services/gmuxd/internal/update"
 	"github.com/gmuxapp/gmux/services/gmuxd/internal/pisdk"
+	"github.com/gmuxapp/gmux/services/gmuxd/internal/gitwatcher"
 	"github.com/gmuxapp/gmux/services/gmuxd/internal/wsproxy"
 	"github.com/google/uuid"
 	"nhooyr.io/websocket"
@@ -2386,7 +2387,7 @@ func serve(stderr io.Writer) int {
 			writeError(w, http.StatusNotFound, "not_found", err.Error())
 			return
 		}
-		cmd := exec.Command("git", "-C", root, "diff", "HEAD", "--shortstat")
+		cmd := exec.CommandContext(r.Context(), "git", "-C", root, "diff", "HEAD", "--shortstat")
 		out, _ := cmd.Output() // non-zero exit (no repo, no commits) → empty output
 		files, ins, del := parseGitShortstat(string(out))
 		writeJSON(w, map[string]any{
@@ -2422,7 +2423,7 @@ func serve(stderr io.Writer) int {
 		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
-		cmd := exec.Command("git", "-C", cwd, "diff", "HEAD")
+		cmd := exec.CommandContext(r.Context(), "git", "-C", cwd, "diff", "HEAD")
 		out, _ := cmd.Output() // non-zero exit (no repo, no commits) → empty body
 		_, _ = w.Write(out)
 	})
@@ -2438,7 +2439,7 @@ func serve(stderr io.Writer) int {
 			writeError(w, http.StatusNotFound, "not_found", err.Error())
 			return
 		}
-		cmd := exec.Command("git", "-C", root, "status", "--porcelain=v1", "-u")
+		cmd := exec.CommandContext(r.Context(), "git", "-C", root, "status", "--porcelain=v1", "-uno")
 		out, _ := cmd.Output()
 		entries := parseGitPorcelain(string(out))
 		writeJSON(w, map[string]any{"ok": true, "data": entries})
@@ -2547,6 +2548,51 @@ func serve(stderr io.Writer) int {
 		}()
 	}
 
+	// ── Git watcher (push-based git status) ──
+	//
+	// Watches .git/index and .git/HEAD for every project root.
+	// On change (debounced 300ms), runs git diff HEAD --shortstat and
+	// git status --porcelain=v1 -uno, then broadcasts a git-status SSE
+	// event on the store. No polling — updates are triggered only by
+	// actual git operations.
+
+	gitWatcherStop := make(chan struct{})
+	gitWatcherInst := gitwatcher.New(sessions)
+
+	// loadGitWatcherRoots registers all currently configured project
+	// roots with the GitWatcher. Called at startup and whenever
+	// projects change. Idempotent: re-registering a known root is a
+	// no-op inside gitwatcher.
+	loadGitWatcherRoots := func() {
+		state, err := projectMgr.Load()
+		if err != nil {
+			return
+		}
+		for _, item := range state.Items {
+			for _, rule := range item.Match {
+				if rule.Path == "" {
+					continue
+				}
+				root := paths.NormalizePath(rule.Path)
+				if err := gitWatcherInst.Add(item.Slug, root); err != nil {
+					log.Printf("gitwatcher: add %s (%s): %v", item.Slug, root, err)
+				}
+				break // first path rule wins
+			}
+		}
+	}
+	loadGitWatcherRoots()
+
+	// Extend the projects Broadcast callback to also refresh the
+	// watcher when the project list changes.
+	prevBroadcast := projectMgr.Broadcast
+	projectMgr.Broadcast = func() {
+		prevBroadcast()
+		loadGitWatcherRoots()
+	}
+
+	go gitWatcherInst.Run(gitWatcherStop)
+
 	// ── Devcontainer discovery ──
 
 	var dcWatcher *devcontainers.Watcher
@@ -2614,6 +2660,7 @@ func serve(stderr io.Writer) int {
 	if tsDiscovery != nil {
 		tsDiscovery.Stop()
 	}
+	close(gitWatcherStop)
 	if dcWatcher != nil {
 		dcWatcher.Stop()
 	}

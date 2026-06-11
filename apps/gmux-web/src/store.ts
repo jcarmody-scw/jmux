@@ -48,6 +48,23 @@ export const unmatchedActiveCount = signal(0)
 
 export const peers = signal<PeerInfo[]>([])
 
+// ── Git status (push-based, updated via git-status SSE events) ─────────────
+
+/** Per-project git status result keyed by project slug. */
+export interface GitStatusResult {
+  files: number
+  insertions: number
+  deletions: number
+  /** porcelain v1 entries (only tracked changes — no -u flag on server) */
+  entries?: Array<{ path: string; status: string }>
+}
+
+/**
+ * Map of projectSlug → GitStatusResult, updated by git-status SSE events.
+ * Components subscribe to this signal instead of polling the HTTP endpoint.
+ */
+export const gitStatusBySlug = signal<ReadonlyMap<string, GitStatusResult>>(new Map())
+
 // ── Open markdown editor tabs ────────────────────────────────────────────────
 
 export interface MarkdownTab {
@@ -912,6 +929,23 @@ export function initStore(): () => void {
 
   source.addEventListener('peer-status', () => {
     fetchHealth()
+  })
+
+  source.addEventListener('git-status', (e) => {
+    try {
+      const ev = JSON.parse(e.data)
+      const payload = ev.payload as GitStatusResult & { slug?: string }
+      const slug = ev.id ?? payload?.slug
+      if (!slug) return
+      const next = new Map(gitStatusBySlug.value)
+      next.set(slug, {
+        files: payload.files ?? 0,
+        insertions: payload.insertions ?? 0,
+        deletions: payload.deletions ?? 0,
+        entries: payload.entries,
+      })
+      gitStatusBySlug.value = next
+    } catch { /* ignore */ }
   })
 
   cleanups.push(() => source.close())

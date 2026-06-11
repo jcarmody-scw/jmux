@@ -1,32 +1,27 @@
 /**
  * GitStatus — inline git change indicator for the file tree header.
  *
- * Polls GET /v1/git/{slug}/status every 10 s and renders a compact
- * badge showing changed files, insertions, and deletions.
- * Clicking it launches a new terminal pane running:
- *   git diff HEAD | diff-so-fancy | less --tabs=4 -RFX
+ * Subscribes to the `gitStatusBySlug` signal in store.ts, which is updated
+ * by git-status SSE events pushed from the daemon's GitWatcher. On mount,
+ * performs a one-shot HTTP fetch to populate state before the first push
+ * event arrives. No polling interval.
  *
- * Renders nothing when there are no changes.
+ * Clicking the badge navigates to the diff panel.
  */
 
 import { useState, useEffect, useCallback } from 'preact/hooks'
-import { navigateToDiffView } from './store'
+import { navigateToDiffView, gitStatusBySlug } from './store'
+import type { GitStatusResult } from './store'
 
-// ── Types ──
+// ── Pure helpers (exported for tests) ──
 
-export interface GitStatusResult {
-  files: number
-  insertions: number
-  deletions: number
-}
+export type { GitStatusResult }
 
 interface FormattedGitStat {
   files: string
   insertions: string | null
   deletions: string | null
 }
-
-// ── Pure helpers (exported for tests) ──
 
 /** Format a GitStatusResult into display strings for each part. */
 export function formatGitStat(r: GitStatusResult): FormattedGitStat {
@@ -46,9 +41,13 @@ export function GitStatus({
   projectSlug: string
   cwd: string
 }) {
-  const [status, setStatus] = useState<GitStatusResult | null>(null)
+  // Initialise from the signal (may already have data from a previous event).
+  const [status, setStatus] = useState<GitStatusResult | null>(
+    () => gitStatusBySlug.value.get(projectSlug) ?? null,
+  )
 
-  const poll = useCallback(async () => {
+  // One-shot fetch on mount to populate before the first push event.
+  const fetchInitial = useCallback(async () => {
     try {
       const resp = await fetch(`/v1/git/${encodeURIComponent(projectSlug)}/status`)
       if (!resp.ok) return
@@ -62,10 +61,17 @@ export function GitStatus({
   }, [projectSlug])
 
   useEffect(() => {
-    void poll()
-    const id = setInterval(() => void poll(), 10_000)
-    return () => clearInterval(id)
-  }, [poll])
+    void fetchInitial()
+  }, [fetchInitial])
+
+  // Subscribe to push events from the store signal.
+  useEffect(() => {
+    const unsub = gitStatusBySlug.subscribe(map => {
+      const v = map.get(projectSlug)
+      if (v !== undefined) setStatus(v)
+    })
+    return unsub
+  }, [projectSlug])
 
   if (!status || status.files === 0) return null
 
