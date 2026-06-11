@@ -19,6 +19,7 @@ import (
 	"regexp"
 	"runtime/debug"
 	"sort"
+	"strconv"
 	"runtime"
 	"strings"
 	"sync"
@@ -49,6 +50,7 @@ import (
 	"github.com/gmuxapp/gmux/services/gmuxd/internal/unixipc"
 	"github.com/gmuxapp/gmux/services/gmuxd/internal/update"
 	"github.com/gmuxapp/gmux/services/gmuxd/internal/pisdk"
+	"github.com/gmuxapp/gmux/services/gmuxd/internal/gitwatcher"
 	"github.com/gmuxapp/gmux/services/gmuxd/internal/wsproxy"
 	"github.com/google/uuid"
 	"nhooyr.io/websocket"
@@ -57,6 +59,14 @@ import (
 // version is set at build time via -ldflags "-X main.version=..."
 // For dev builds (no ldflags), init() enriches it with vcs date+hash.
 var version = "dev"
+
+// vcsRevision, vcsModified, vcsTimeStr are populated from debug.ReadBuildInfo in init().
+// They are exposed via the /v1/health topology block.
+var (
+	vcsRevision string
+	vcsModified bool
+	vcsTimeStr  string
+)
 
 func init() {
 	if version != "dev" {
@@ -67,14 +77,20 @@ func init() {
 		return
 	}
 	var rev, vcsTime string
+	var modified bool
 	for _, s := range info.Settings {
 		switch s.Key {
 		case "vcs.revision":
 			rev = s.Value
 		case "vcs.time":
 			vcsTime = s.Value
+		case "vcs.modified":
+			modified = s.Value == "true"
 		}
 	}
+	vcsRevision = rev
+	vcsModified = modified
+	vcsTimeStr = vcsTime
 	if rev == "" {
 		return
 	}
@@ -89,6 +105,49 @@ func init() {
 		}
 	}
 	version = "dev." + hash
+}
+
+
+// buildTopology assembles the topology block included in /v1/health responses.
+// It is a pure function so it can be unit-tested independently of the HTTP handler.
+// stateDir is the gmux state directory (e.g. ~/.local/state/gmux).
+// devProxy is the value of $GMUXD_DEV_PROXY, empty in production.
+func buildTopology(tcpAddr, stateDir, startedIn, devProxy string) map[string]any {
+	// Derive instance name from the stateDir layout.
+	// Prod:         ~/.local/state/gmux                    → "gmux"
+	// Dev default:  ~/.local/state/gmux-dev/state/gmux     → "gmux-dev"
+	// Dev worktree: ~/.local/state/gmux-dev-abc/state/gmux → "gmux-dev-abc"
+	instance := filepath.Base(stateDir)
+	// When XDG_STATE_HOME is set, stateDir is XDG_STATE_HOME/gmux so the
+	// distinguishing component is two levels up (grandparent of stateDir).
+	grandparent := filepath.Base(filepath.Dir(filepath.Dir(stateDir)))
+	if strings.HasPrefix(grandparent, "gmux-") {
+		instance = grandparent
+	}
+
+	// Parse listen port from tcpAddr ("host:port" or ":port").
+	var listenPort int
+	if _, portStr, err := net.SplitHostPort(tcpAddr); err == nil {
+		if p, err := strconv.Atoi(portStr); err == nil {
+			listenPort = p
+		}
+	}
+
+	topo := map[string]any{
+		"instance":   instance,
+		"listen_port": listenPort,
+		"state_dir":  stateDir,
+		"started_in": startedIn,
+		"vcs": map[string]any{
+			"revision": vcsRevision,
+			"modified": vcsModified,
+			"time":     vcsTimeStr,
+		},
+	}
+	if devProxy != "" {
+		topo["dev_proxy"] = devProxy
+	}
+	return topo
 }
 
 type LaunchConfig struct {
@@ -644,6 +703,7 @@ func serve(stderr io.Writer) int {
 
 	// State directory for persistent files (projects.json, auth-token, etc).
 	stateDir := paths.StateDir()
+	startedIn, _ := os.Getwd()
 
 	// Project manager handles concurrent access to projects.json and
 	// auto-assignment of sessions to projects.
@@ -777,6 +837,8 @@ func serve(stderr io.Writer) int {
 		if discovery.ExpectedRunnerHash != "" {
 			data["runner_hash"] = discovery.ExpectedRunnerHash
 		}
+		// Topology: self-describing dev/prod instance info for agent tooling.
+		data["topology"] = buildTopology(tcpAddr, stateDir, startedIn, os.Getenv("GMUXD_DEV_PROXY"))
 
 		// Launchers: what adapters can be launched on this host.
 		data["default_launcher"] = launchConfig.DefaultLauncher
@@ -2386,7 +2448,7 @@ func serve(stderr io.Writer) int {
 			writeError(w, http.StatusNotFound, "not_found", err.Error())
 			return
 		}
-		cmd := exec.Command("git", "-C", root, "diff", "HEAD", "--shortstat")
+		cmd := exec.CommandContext(r.Context(), "git", "-C", root, "diff", "HEAD", "--shortstat")
 		out, _ := cmd.Output() // non-zero exit (no repo, no commits) → empty output
 		files, ins, del := parseGitShortstat(string(out))
 		writeJSON(w, map[string]any{
@@ -2422,7 +2484,7 @@ func serve(stderr io.Writer) int {
 		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
-		cmd := exec.Command("git", "-C", cwd, "diff", "HEAD")
+		cmd := exec.CommandContext(r.Context(), "git", "-C", cwd, "diff", "HEAD")
 		out, _ := cmd.Output() // non-zero exit (no repo, no commits) → empty body
 		_, _ = w.Write(out)
 	})
@@ -2438,7 +2500,7 @@ func serve(stderr io.Writer) int {
 			writeError(w, http.StatusNotFound, "not_found", err.Error())
 			return
 		}
-		cmd := exec.Command("git", "-C", root, "status", "--porcelain=v1", "-u")
+		cmd := exec.CommandContext(r.Context(), "git", "-C", root, "status", "--porcelain=v1", "-uno")
 		out, _ := cmd.Output()
 		entries := parseGitPorcelain(string(out))
 		writeJSON(w, map[string]any{"ok": true, "data": entries})
@@ -2455,6 +2517,14 @@ func serve(stderr io.Writer) int {
 		log.Fatalf("FATAL: %v", err)
 	}
 	tcpAddr = resolved
+
+	// Parse listen port for port-scoped auth cookie.
+	var tcpListenPort int
+	if _, portStr, err2 := net.SplitHostPort(tcpAddr); err2 == nil {
+		if p, err2 := strconv.Atoi(portStr); err2 == nil {
+			tcpListenPort = p
+		}
+	}
 
 	tok, err := authtoken.LoadOrCreate(stateDir)
 	if err != nil {
@@ -2509,7 +2579,7 @@ func serve(stderr io.Writer) int {
 
 	// ── TCP listener (always, token-authenticated) ──
 
-	authedHandler := netauth.Middleware(authToken, mux)
+	authedHandler := netauth.MiddlewareWithPort(authToken, tcpListenPort, mux)
 	tcpSrv = &http.Server{Addr: tcpAddr, Handler: authedHandler}
 
 	tcpLn, err := net.Listen("tcp", tcpAddr)
@@ -2546,6 +2616,51 @@ func serve(stderr io.Writer) int {
 			}
 		}()
 	}
+
+	// ── Git watcher (push-based git status) ──
+	//
+	// Watches .git/index and .git/HEAD for every project root.
+	// On change (debounced 300ms), runs git diff HEAD --shortstat and
+	// git status --porcelain=v1 -uno, then broadcasts a git-status SSE
+	// event on the store. No polling — updates are triggered only by
+	// actual git operations.
+
+	gitWatcherStop := make(chan struct{})
+	gitWatcherInst := gitwatcher.New(sessions)
+
+	// loadGitWatcherRoots registers all currently configured project
+	// roots with the GitWatcher. Called at startup and whenever
+	// projects change. Idempotent: re-registering a known root is a
+	// no-op inside gitwatcher.
+	loadGitWatcherRoots := func() {
+		state, err := projectMgr.Load()
+		if err != nil {
+			return
+		}
+		for _, item := range state.Items {
+			for _, rule := range item.Match {
+				if rule.Path == "" {
+					continue
+				}
+				root := paths.NormalizePath(rule.Path)
+				if err := gitWatcherInst.Add(item.Slug, root); err != nil {
+					log.Printf("gitwatcher: add %s (%s): %v", item.Slug, root, err)
+				}
+				break // first path rule wins
+			}
+		}
+	}
+	loadGitWatcherRoots()
+
+	// Extend the projects Broadcast callback to also refresh the
+	// watcher when the project list changes.
+	prevBroadcast := projectMgr.Broadcast
+	projectMgr.Broadcast = func() {
+		prevBroadcast()
+		loadGitWatcherRoots()
+	}
+
+	go gitWatcherInst.Run(gitWatcherStop)
 
 	// ── Devcontainer discovery ──
 
@@ -2614,6 +2729,7 @@ func serve(stderr io.Writer) int {
 	if tsDiscovery != nil {
 		tsDiscovery.Stop()
 	}
+	close(gitWatcherStop)
 	if dcWatcher != nil {
 		dcWatcher.Stop()
 	}

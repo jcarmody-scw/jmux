@@ -14,6 +14,7 @@
 package netauth
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -22,23 +23,43 @@ import (
 )
 
 const (
-	cookieName = "gmux-token"
-	// cookieMaxAge is 90 days. The token itself doesn't expire, so the cookie
-	// just needs to be long-lived enough that users don't have to re-enter it
-	// constantly, but short enough that a stolen cookie eventually stops working
-	// if the token is rotated.
+	legacyCookieName = "gmux-token"
+	// cookieName is an alias kept for test compatibility.
+	cookieName = legacyCookieName
+	// cookieMaxAge is 90 days.
 	cookieMaxAge = 90 * 24 * 60 * 60
 )
+
+// cookieNameForPort returns the port-scoped cookie name, e.g. "gmux-token-22226".
+// This prevents prod and dev daemons from clobbering each other's auth cookies.
+func cookieNameForPort(port int) string {
+	return fmt.Sprintf("%s-%d", legacyCookieName, port)
+}
 
 // Middleware returns an http.Handler that wraps next with token authentication.
 // Requests with a valid bearer token or cookie are passed through.
 // API/WebSocket requests without valid auth get 401.
 // Browser requests without valid auth are redirected to the login page.
+// The port-scoped cookie name (gmux-token-<port>) is used; the legacy
+// gmux-token cookie is accepted on read for one release.
 func Middleware(token string, next http.Handler) http.Handler {
+	return MiddlewareWithPort(token, 0, next)
+}
+
+// MiddlewareWithPort wraps next with token authentication, scoping the session
+// cookie to the given listen port (e.g. "gmux-token-22226"). Pass port=0 to
+// use the legacy name "gmux-token" (for backwards-compatible callers).
+func MiddlewareWithPort(token string, port int, next http.Handler) http.Handler {
+	var activeCookieName string
+	if port > 0 {
+		activeCookieName = cookieNameForPort(port)
+	} else {
+		activeCookieName = legacyCookieName
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// The login page and its POST handler must be accessible without auth.
 		if r.URL.Path == "/auth/login" {
-			handleLogin(token, w, r)
+			handleLoginWithCookie(token, activeCookieName, w, r)
 			return
 		}
 
@@ -57,7 +78,7 @@ func Middleware(token string, next http.Handler) http.Handler {
 			return
 		}
 
-		if isAuthorized(r, token) {
+		if isAuthorizedWithCookie(r, token, activeCookieName) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -76,6 +97,10 @@ func Middleware(token string, next http.Handler) http.Handler {
 }
 
 func isAuthorized(r *http.Request, token string) bool {
+	return isAuthorizedWithCookie(r, token, legacyCookieName)
+}
+
+func isAuthorizedWithCookie(r *http.Request, token, activeCookieName string) bool {
 	// Check Authorization header.
 	if h := r.Header.Get("Authorization"); h != "" {
 		val := strings.TrimPrefix(h, "Bearer ")
@@ -84,9 +109,16 @@ func isAuthorized(r *http.Request, token string) bool {
 		}
 	}
 
-	// Check cookie.
-	if c, err := r.Cookie(cookieName); err == nil && authtoken.Equal(c.Value, token) {
+	// Check port-scoped cookie.
+	if c, err := r.Cookie(activeCookieName); err == nil && authtoken.Equal(c.Value, token) {
 		return true
+	}
+
+	// Accept legacy cookie name for one release (migration window).
+	if activeCookieName != legacyCookieName {
+		if c, err := r.Cookie(legacyCookieName); err == nil && authtoken.Equal(c.Value, token) {
+			return true
+		}
 	}
 
 	return false
@@ -108,10 +140,14 @@ func isAPIRequest(r *http.Request) bool {
 }
 
 func handleLogin(token string, w http.ResponseWriter, r *http.Request) {
+	handleLoginWithCookie(token, legacyCookieName, w, r)
+}
+
+func handleLoginWithCookie(token, activeCookieName string, w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		// Check if already authenticated; redirect to home.
-		if isAuthorized(r, token) {
+		if isAuthorizedWithCookie(r, token, activeCookieName) {
 			http.Redirect(w, r, "/", http.StatusSeeOther)
 			return
 		}
@@ -121,7 +157,7 @@ func handleLogin(token string, w http.ResponseWriter, r *http.Request) {
 		// login page when scanning a QR code.
 		if qToken := strings.TrimSpace(r.URL.Query().Get("token")); qToken != "" {
 			if authtoken.Equal(qToken, token) {
-				setAuthCookie(w, token)
+				setAuthCookieNamed(w, token, activeCookieName)
 				log.Printf("netauth: successful login via URL token from %s", r.RemoteAddr)
 				http.Redirect(w, r, "/", http.StatusSeeOther)
 				return
@@ -146,7 +182,7 @@ func handleLogin(token string, w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		setAuthCookie(w, token)
+		setAuthCookieNamed(w, token, activeCookieName)
 		log.Printf("netauth: successful login from %s", r.RemoteAddr)
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 
@@ -156,8 +192,12 @@ func handleLogin(token string, w http.ResponseWriter, r *http.Request) {
 }
 
 func setAuthCookie(w http.ResponseWriter, token string) {
+	setAuthCookieNamed(w, token, legacyCookieName)
+}
+
+func setAuthCookieNamed(w http.ResponseWriter, token, name string) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     cookieName,
+		Name:     name,
 		Value:    token,
 		Path:     "/",
 		MaxAge:   cookieMaxAge,

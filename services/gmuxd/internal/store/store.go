@@ -113,11 +113,16 @@ type Status struct {
 }
 
 type Event struct {
-	Type string `json:"type"` // "session-upsert" | "session-remove"
+	Type string `json:"type"` // "session-upsert" | "session-remove" | "git-status" | ...
 	ID   string `json:"id"`
 
 	// Present for session-upsert
 	Session *Session `json:"session,omitempty"`
+
+	// Present for transient typed events (e.g. git-status).
+	// Using json.RawMessage keeps the store package decoupled from
+	// git-specific types — the caller marshals its own payload.
+	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
 type subscriber struct {

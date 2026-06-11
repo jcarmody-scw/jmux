@@ -28,6 +28,7 @@ import {
   navigateToImageViewer,
   sessions,
   navigateToSession,
+  gitStatusBySlug,
 } from './store'
 import type { Session } from './types'
 import { GitStatus } from './git-status'
@@ -492,7 +493,7 @@ export function FileTree({ projectSlug, cwd }: FileTreeProps) {
   // ── Initial load + projectSlug change: reset paths when slug changes ──
   useEffect(() => {
     void loadPaths()
-    void refreshGitStatus()
+    void refreshGitStatus()  // one-shot initial fetch before first push event
   }, [projectSlug, loadPaths, refreshGitStatus])
 
   // Re-filter paths when showHidden toggles.
@@ -500,12 +501,24 @@ export function FileTree({ projectSlug, cwd }: FileTreeProps) {
     void loadPaths()
   }, [showHidden, loadPaths])
 
-  // Poll: delta file-tree update + git status every 2.5 s.
+  // Subscribe to push-based git status events from the SSE signal.
+  // This replaces the polling call; the model.setGitStatus() call here
+  // runs whenever the server broadcasts a git-status event for this project.
+  useEffect(() => {
+    const unsub = gitStatusBySlug.subscribe(map => {
+      const payload = map.get(projectSlug)
+      if (!payload?.entries || !modelRef.current) return
+      modelRef.current.setGitStatus(payload.entries as import('@pierre/trees').GitStatusEntry[])
+    })
+    return unsub
+  }, [projectSlug])
+
+  // Poll: delta file-tree update every 2.5 s.
   // File-tree uses walk?since=<version> for cheap incremental updates.
   // The file-tree delta poll is skipped until the Worker completes (version known).
+  // Git status is no longer polled here — it is pushed via SSE events.
   useEffect(() => {
     const id = setInterval(async () => {
-      void refreshGitStatus()
       const v = walkVersionRef.current
       if (v === null) return // Worker still streaming; skip
       const model = modelRef.current
@@ -531,7 +544,7 @@ export function FileTree({ projectSlug, cwd }: FileTreeProps) {
       }
     }, 2500)
     return () => clearInterval(id)
-  }, [loadPaths, refreshGitStatus])
+  }, [loadPaths])
 
   // ── Filename tooltips in shadow DOM ──
   // @pierre/trees renders inside a shadow root — we can't add `title` via CSS.

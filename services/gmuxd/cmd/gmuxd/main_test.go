@@ -715,3 +715,55 @@ func TestParseGitShortstat(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildTopologyFields(t *testing.T) {
+	topo := buildTopology("127.0.0.1:22226", "/home/agent/.local/state/gmux", "/repos/james-gmux", "")
+
+	if topo["instance"] != "gmux" {
+		t.Errorf("instance: got %v, want \"gmux\"", topo["instance"])
+	}
+	if topo["listen_port"] != 22226 {
+		t.Errorf("listen_port: got %v, want 22226", topo["listen_port"])
+	}
+	if topo["started_in"] != "/repos/james-gmux" {
+		t.Errorf("started_in: got %v", topo["started_in"])
+	}
+	vcs, ok := topo["vcs"].(map[string]any)
+	if !ok {
+		t.Fatal("vcs field missing or wrong type")
+	}
+	if _, exists := vcs["revision"]; !exists {
+		t.Error("vcs.revision key missing")
+	}
+	if _, exists := vcs["modified"]; !exists {
+		t.Error("vcs.modified key missing")
+	}
+}
+
+func TestBuildTopologyDevProxy(t *testing.T) {
+	topo := buildTopology("127.0.0.1:22226", "/home/agent/.local/state/gmux-dev/state/gmux", "/repos/james-gmux", "http://localhost:5173")
+
+	if topo["instance"] != "gmux-dev" {
+		t.Errorf("instance: got %v, want \"gmux-dev\"", topo["instance"])
+	}
+	if topo["dev_proxy"] != "http://localhost:5173" {
+		t.Errorf("dev_proxy: got %v", topo["dev_proxy"])
+	}
+}
+
+func TestBuildTopologyListenPortParsing(t *testing.T) {
+	cases := []struct {
+		addr string
+		want int
+	}{
+		{"127.0.0.1:8790", 8790},
+		{"0.0.0.0:22226", 22226},
+		{":8790", 8790},
+	}
+	for _, tc := range cases {
+		topo := buildTopology(tc.addr, "/state/gmux", "/repo", "")
+		if topo["listen_port"] != tc.want {
+			t.Errorf("addr %q: listen_port got %v, want %d", tc.addr, topo["listen_port"], tc.want)
+		}
+	}
+}

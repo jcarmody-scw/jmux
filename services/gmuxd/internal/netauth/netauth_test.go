@@ -354,3 +354,48 @@ func TestTokenWithWhitespaceAccepted(t *testing.T) {
 		t.Errorf("status = %d, want 303 (whitespace should be trimmed)", rr.Code)
 	}
 }
+
+func TestPortScopedCookieName(t *testing.T) {
+	if got := cookieNameForPort(22226); got != "gmux-token-22226" {
+		t.Errorf("cookieNameForPort(22226) = %q, want \"gmux-token-22226\"", got)
+	}
+	if got := cookieNameForPort(8790); got != "gmux-token-8790" {
+		t.Errorf("cookieNameForPort(8790) = %q, want \"gmux-token-8790\"", got)
+	}
+}
+
+func TestPortScopedCookieSetOnLogin(t *testing.T) {
+	h := MiddlewareWithPort(testToken, 22226, okHandler())
+	form := url.Values{"token": {testToken}}
+	req := httptest.NewRequest("POST", "/auth/login", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+
+	cookies := rr.Result().Cookies()
+	var found bool
+	for _, c := range cookies {
+		if c.Name == "gmux-token-22226" {
+			found = true
+		}
+		if c.Name == "gmux-token" {
+			t.Errorf("legacy cookie name set; expected only port-scoped name")
+		}
+	}
+	if !found {
+		t.Errorf("port-scoped cookie gmux-token-22226 not set; cookies: %v", cookies)
+	}
+}
+
+func TestLegacyCookieStillAccepted(t *testing.T) {
+	h := MiddlewareWithPort(testToken, 22226, okHandler())
+	req := httptest.NewRequest("GET", "/v1/sessions", nil)
+	// Set the legacy cookie name
+	req.AddCookie(&http.Cookie{Name: "gmux-token", Value: testToken})
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("legacy cookie rejected: status = %d, want 200", rr.Code)
+	}
+}
