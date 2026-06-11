@@ -191,6 +191,11 @@ export function reduceItems(items: RenderItem[], ev: Record<string, unknown>): R
       return [...items, { kind: 'assistant', blocks, toolExecMap: {}, complete: false }]
     }
     case 'message_end': {
+      // Only mark the last AssistantItem complete for assistant message_end.
+      // User message_end arrives before the assistant turn and must not
+      // prematurely complete the empty turn block.
+      const msg = ev.message as { role?: string } | undefined
+      if (msg?.role === 'user') return items
       const next = [...items]
       for (let i = next.length - 1; i >= 0; i--) {
         if (next[i].kind === 'assistant') {

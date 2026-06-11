@@ -160,3 +160,28 @@ describe('reduceItems — multi-turn overwrite bug', () => {
     expect(assistantItems[1].blocks).toEqual(turn2Blocks)
   })
 })
+
+describe('reduceItems — message_end role guard', () => {
+  it('user message_end does not complete the turn block', () => {
+    // Sequence: turn_start → user message_start/end → assistant message_update
+    // The user message_end must not mark the turn block as complete.
+    let items = reduceItems([], { type: 'agent_start' })
+    items = reduceItems(items, { type: 'turn_start' })
+    items = reduceItems(items, { type: 'message_start', message: { role: 'user', content: [] } })
+    items = reduceItems(items, { type: 'message_end', message: { role: 'user', content: [] } })
+
+    const assistantItem = items.find(i => i.kind === 'assistant') as AssistantItem
+    expect(assistantItem).toBeDefined()
+    expect(assistantItem.complete).toBe(false)
+  })
+
+  it('assistant message_end marks the turn block complete', () => {
+    const blocks = [{ type: 'text', text: 'hello' }]
+    let items = reduceItems([], { type: 'turn_start' })
+    items = reduceItems(items, { type: 'message_update', message: { content: blocks } })
+    items = reduceItems(items, { type: 'message_end', message: { role: 'assistant', content: blocks } })
+
+    const assistantItem = items.find(i => i.kind === 'assistant') as AssistantItem
+    expect(assistantItem.complete).toBe(true)
+  })
+})
