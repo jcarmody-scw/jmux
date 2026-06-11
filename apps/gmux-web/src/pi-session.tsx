@@ -51,7 +51,7 @@ interface UserItem {
   text: string
 }
 
-interface AssistantItem {
+export interface AssistantItem {
   kind: 'assistant'
   blocks: ContentBlock[]
   toolExecMap: ToolExecMap
@@ -66,7 +66,7 @@ interface SystemItem {
   text: string
 }
 
-type RenderItem = UserItem | AssistantItem | SystemItem
+export type RenderItem = UserItem | AssistantItem | SystemItem
 
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for tests)
@@ -102,6 +102,138 @@ export function getSystemText(event: any): string {
       return `retry failed: ${event.finalError ?? 'unknown'}`
     default:
       return String(event.type ?? 'event')
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Helper: extract plain text from an RPC tool result/partial-result object.
+// RPC tool results have shape {content: [{type:'text',text:'...'}], details:{}}.
+// Falls back to string coercion for legacy plain-string results.
+// ---------------------------------------------------------------------------
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function extractResultText(r: any): string {
+  if (!r) return ''
+  if (typeof r === 'string') return r
+  if (Array.isArray(r.content)) {
+    return (r.content as Array<{type: string; text?: string}>)
+      .filter(b => b.type === 'text')
+      .map(b => b.text ?? '')
+      .join('')
+  }
+  return ''
+}
+
+// ---------------------------------------------------------------------------
+// Helper: update toolExecMap on the last AssistantItem
+// ---------------------------------------------------------------------------
+
+function updateLastAssistantToolExec(
+  prev: RenderItem[],
+  toolCallId: string,
+  update: ToolExec | ((existing: ToolExec | undefined) => ToolExec),
+): RenderItem[] {
+  const next = [...prev]
+  for (let i = next.length - 1; i >= 0; i--) {
+    if (next[i].kind === 'assistant') {
+      const cur = next[i] as AssistantItem
+      const existing = cur.toolExecMap[toolCallId]
+      const resolved = typeof update === 'function' ? update(existing) : update
+      next[i] = {
+        ...cur,
+        toolExecMap: { ...cur.toolExecMap, [toolCallId]: resolved },
+      }
+      return next
+    }
+  }
+  return prev
+}
+
+// ---------------------------------------------------------------------------
+// Pure items reducer (exported for tests)
+// ---------------------------------------------------------------------------
+
+/** Apply one SDK event to the items array, returning the new array. */
+export function reduceItems(items: RenderItem[], ev: Record<string, unknown>): RenderItem[] {
+  switch (ev.type) {
+    case 'session_ready': {
+      return [...items, { kind: 'system', subtype: 'ready', text: getSystemText(ev) }]
+    }
+    case 'error': {
+      return [...items, { kind: 'system', subtype: 'error', text: getSystemText(ev) }]
+    }
+    case 'warning': {
+      return [...items, { kind: 'system', subtype: 'warning', text: getSystemText(ev) }]
+    }
+    case 'compaction_start':
+    case 'compaction_end':
+    case 'auto_retry_start':
+    case 'auto_retry_end': {
+      return [...items, { kind: 'system', subtype: 'info', text: getSystemText(ev) }]
+    }
+    case 'agent_start':
+    case 'turn_start': {
+      // Each agent_start and each turn_start creates a fresh AssistantItem.
+      // This prevents multi-turn message_update events from overwriting each other.
+      return [...items, { kind: 'assistant', blocks: [], toolExecMap: {}, complete: false }]
+    }
+    case 'message_update': {
+      const blocks = extractBlocks(ev.message)
+      const next = [...items]
+      for (let i = next.length - 1; i >= 0; i--) {
+        if (next[i].kind === 'assistant') {
+          const cur = next[i] as AssistantItem
+          next[i] = { ...cur, blocks }
+          return next
+        }
+      }
+      // No existing assistant item — create one (fallback)
+      return [...items, { kind: 'assistant', blocks, toolExecMap: {}, complete: false }]
+    }
+    case 'message_end': {
+      const next = [...items]
+      for (let i = next.length - 1; i >= 0; i--) {
+        if (next[i].kind === 'assistant') {
+          const cur = next[i] as AssistantItem
+          next[i] = { ...cur, complete: true }
+          return next
+        }
+      }
+      return items
+    }
+    case 'tool_execution_start': {
+      const exec: ToolExec = {
+        toolCallId: String(ev.toolCallId),
+        toolName: String(ev.toolName),
+        args: (ev.args as Record<string, unknown>) ?? {},
+        output: '',
+        done: false,
+        isError: false,
+      }
+      return updateLastAssistantToolExec(items, exec.toolCallId, exec)
+    }
+    case 'tool_execution_update': {
+      const toolCallId = String(ev.toolCallId)
+      const partial = extractResultText(ev.partialResult)
+      return updateLastAssistantToolExec(items, toolCallId, existing => ({
+        ...(existing ?? { toolCallId, toolName: '', args: {}, output: '', done: false, isError: false }),
+        output: partial,
+      }))
+    }
+    case 'tool_execution_end': {
+      const toolCallId = String(ev.toolCallId)
+      const resultStr = extractResultText(ev.result)
+      return updateLastAssistantToolExec(items, toolCallId, existing => ({
+        ...(existing ?? { toolCallId, toolName: '', args: {}, output: '', done: false, isError: false }),
+        output: resultStr,
+        done: true,
+        isError: Boolean(ev.isError),
+      }))
+    }
+    // agent_end, queue_update, session_info_changed, thinking_level_changed, turn_end,
+    // message_start: no items change
+    default:
+      return items
   }
 }
 
@@ -231,121 +363,25 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [items])
 
-  // Stable event dispatcher — mutates items state
+  // Stable event dispatcher — uses reduceItems for all items changes
   const dispatchEvent = useCallback((ev: Record<string, unknown>) => {
+    // Items update via pure reducer
+    setItems(prev => reduceItems(prev, ev))
+
+    // Streaming state management (not captured by reduceItems)
     switch (ev.type) {
-      case 'session_ready': {
-        setItems(prev => [...prev, {
-          kind: 'system',
-          subtype: 'ready',
-          text: getSystemText(ev),
-        }])
-        break
-      }
       case 'agent_start': {
         setStreaming(true)
-        setItems(prev => [...prev, {
-          kind: 'assistant',
-          blocks: [],
-          toolExecMap: {},
-          complete: false,
-        }])
-        break
-      }
-      case 'message_update': {
-        const blocks = extractBlocks(ev.message)
-        setItems(prev => {
-          const next = [...prev]
-          // find last assistant item
-          for (let i = next.length - 1; i >= 0; i--) {
-            if (next[i].kind === 'assistant') {
-              const cur = next[i] as AssistantItem
-              next[i] = { ...cur, blocks }
-              return next
-            }
-          }
-          // no existing assistant item — create one
-          return [...prev, { kind: 'assistant', blocks, toolExecMap: {}, complete: false }]
-        })
-        break
-      }
-      case 'message_end': {
-        setItems(prev => {
-          const next = [...prev]
-          for (let i = next.length - 1; i >= 0; i--) {
-            if (next[i].kind === 'assistant') {
-              const cur = next[i] as AssistantItem
-              next[i] = { ...cur, complete: true }
-              return next
-            }
-          }
-          return prev
-        })
         break
       }
       case 'agent_end': {
         if (!ev.willRetry) setStreaming(false)
         break
       }
-      case 'tool_execution_start': {
-        const exec: ToolExec = {
-          toolCallId: String(ev.toolCallId),
-          toolName: String(ev.toolName),
-          args: (ev.args as Record<string, unknown>) ?? {},
-          output: '',
-          done: false,
-          isError: false,
-        }
-        setItems(prev => updateLastAssistantToolExec(prev, exec.toolCallId, exec))
-        break
-      }
-      case 'tool_execution_update': {
-        const toolCallId = String(ev.toolCallId)
-        // partialResult is {content: [{type:'text',text:'...'}], details:{}} in RPC mode.
-        // The accumulated output replaces previous output on each update.
-        const partial = extractResultText(ev.partialResult)
-        setItems(prev => updateLastAssistantToolExec(prev, toolCallId, existing => ({
-          ...(existing ?? { toolCallId, toolName: '', args: {}, output: '', done: false, isError: false }),
-          output: partial,
-        })))
-        break
-      }
-      case 'tool_execution_end': {
-        const toolCallId = String(ev.toolCallId)
-        // result is {content: [{type:'text',text:'...'}], details:{}} in RPC mode.
-        const resultStr = extractResultText(ev.result)
-        setItems(prev => updateLastAssistantToolExec(prev, toolCallId, existing => ({
-          ...(existing ?? { toolCallId, toolName: '', args: {}, output: '', done: false, isError: false }),
-          output: resultStr,
-          done: true,
-          isError: Boolean(ev.isError),
-        })))
-        break
-      }
       case 'error': {
         setStreaming(false)
-        setItems(prev => [...prev, {
-          kind: 'system',
-          subtype: 'error',
-          text: getSystemText(ev),
-        }])
         break
       }
-      case 'warning':
-      case 'compaction_start':
-      case 'compaction_end':
-      case 'auto_retry_start':
-      case 'auto_retry_end': {
-        setItems(prev => [...prev, {
-          kind: 'system',
-          subtype: ev.type === 'warning' ? 'warning' : 'info',
-          text: getSystemText(ev),
-        }])
-        break
-      }
-      // ignored: queue_update, session_info_changed, thinking_level_changed, turn_start, turn_end, message_start
-      default:
-        break
     }
   }, [])
 
@@ -469,50 +505,6 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
       </div>
     </div>
   )
-}
-
-// ---------------------------------------------------------------------------
-// Helper: update toolExecMap on the last AssistantItem
-// ---------------------------------------------------------------------------
-// Helper: extract plain text from an RPC tool result/partial-result object.
-// RPC tool results have shape {content: [{type:'text',text:'...'}], details:{}}.
-// Falls back to string coercion for legacy plain-string results.
-// ---------------------------------------------------------------------------
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function extractResultText(r: any): string {
-  if (!r) return ''
-  if (typeof r === 'string') return r
-  if (Array.isArray(r.content)) {
-    return (r.content as Array<{type: string; text?: string}>)
-      .filter(b => b.type === 'text')
-      .map(b => b.text ?? '')
-      .join('')
-  }
-  return ''
-}
-
-// ---------------------------------------------------------------------------
-
-function updateLastAssistantToolExec(
-  prev: RenderItem[],
-  toolCallId: string,
-  update: ToolExec | ((existing: ToolExec | undefined) => ToolExec),
-): RenderItem[] {
-  const next = [...prev]
-  for (let i = next.length - 1; i >= 0; i--) {
-    if (next[i].kind === 'assistant') {
-      const cur = next[i] as AssistantItem
-      const existing = cur.toolExecMap[toolCallId]
-      const resolved = typeof update === 'function' ? update(existing) : update
-      next[i] = {
-        ...cur,
-        toolExecMap: { ...cur.toolExecMap, [toolCallId]: resolved },
-      }
-      return next
-    }
-  }
-  return prev
 }
 
 // ---------------------------------------------------------------------------
