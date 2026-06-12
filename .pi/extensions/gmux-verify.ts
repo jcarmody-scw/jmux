@@ -379,17 +379,22 @@ export default function (pi: ExtensionAPI) {
 
 				const started = await pollUntil(() => {
 					const fresh = discoverInstances();
-					instance = selectInstance(fresh, params.scenario as Scenario, repoRoot);
-					return instance != null;
+					return selectInstance(fresh, params.scenario as Scenario, repoRoot) != null;
 				}, cfg.daemonTimeoutMs);
 
-				if (!started || !instance) {
+				if (!started) {
 					const tail = tailLog(logTag);
 					return fail(
 						`Daemon did not start within ${cfg.daemonTimeoutMs / 1000}s.\n` +
 							`Log (${logFile(logTag)}):\n${tail}`,
 					);
 				}
+				// Re-discover after confirmed start — avoids callback-mutation narrowing issues.
+				const discovered = selectInstance(discoverInstances(), params.scenario as Scenario, repoRoot);
+				if (!discovered) {
+					return fail(`Daemon started but is no longer reachable — retry.`);
+				}
+				instance = discovered;
 				ok(`Daemon started (instance: ${instance.topology.instance}, port: ${instance.listenPort})`);
 			} else {
 				ok(`Daemon up (instance: ${instance.topology.instance}, port: ${instance.listenPort})`);
