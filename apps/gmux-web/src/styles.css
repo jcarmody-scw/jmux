@@ -3339,33 +3339,80 @@ a.home-host-link:hover {
 }
 
 /* Tool block */
-.pi-session-tool {
-  margin: 6px 0;
-  color: var(--text-secondary);
+.pi-session-tool-row {
+  margin: 3px 0;
 }
-.pi-session-tool-header {
-  color: var(--accent);
-  opacity: 0.8;
-}
-.pi-session-tool-args {
+
+.pi-session-tool-headline {
+  display: block;
+  width: 100%;
+  background: none;
+  border: none;
+  text-align: left;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12.5px;
   color: var(--text-muted);
-  opacity: 0.75;
+  padding: 2px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: pre-wrap;
+  word-break: break-all;
+  line-height: 1.5;
 }
-.pi-session-tool-output {
+.pi-session-tool-headline:hover {
+  background: var(--bg-secondary);
   color: var(--text);
-  opacity: 0.9;
 }
-.pi-session-tool-footer {
+.pi-session-tool-headline-done {
   color: var(--text-muted);
-  opacity: 0.7;
 }
-.pi-session-tool-done {
-  color: var(--status-connected);
-  opacity: 0.85;
-}
-.pi-session-tool-error {
+.pi-session-tool-headline-err {
   color: var(--status-error);
-  opacity: 0.9;
+}
+
+.pi-session-tool-chevron {
+  display: inline-block;
+  width: 14px;
+  font-size: 9px;
+  color: var(--text-dim);
+  user-select: none;
+  vertical-align: middle;
+}
+
+.pi-session-tool-detail {
+  max-height: 240px;
+  overflow-y: auto;
+  margin: 4px 0 4px 16px;
+  padding: 8px 12px;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  background: var(--bg-tertiary, #0a0e18);
+  color: var(--text-muted);
+  white-space: pre;
+  word-break: normal;
+}
+
+.pi-session-tool-diff-add {
+  color: var(--status-connected);
+  display: block;
+}
+.pi-session-tool-diff-del {
+  color: var(--status-error);
+  display: block;
+}
+.pi-session-tool-diff-meta {
+  color: var(--text-dim);
+  display: block;
+}
+.pi-session-tool-diff-ctx {
+  display: block;
+}
+.pi-session-tool-detail-empty {
+  color: var(--text-dim);
+  font-style: italic;
 }
 
 /* System items */
