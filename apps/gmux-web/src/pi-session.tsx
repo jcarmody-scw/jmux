@@ -37,6 +37,7 @@ export interface ToolExec {
   toolName: string
   args: Record<string, unknown>
   output: string
+  details?: unknown
   done: boolean
   isError: boolean
 }
@@ -125,6 +126,73 @@ function extractResultText(r: any): string {
   return ''
 }
 
+
+// ---------------------------------------------------------------------------
+// Exported pure helpers for tool call rendering (s-19)
+// ---------------------------------------------------------------------------
+
+/** Count added/removed lines in a unified diff string. */
+export function parseDiffStats(patch: string): { added: number; removed: number } {
+  let added = 0, removed = 0
+  for (const line of patch.split('\n')) {
+    if (line.startsWith('+') && !line.startsWith('+++')) added++
+    if (line.startsWith('-') && !line.startsWith('---')) removed++
+  }
+  return { added, removed }
+}
+
+/** Return the one-line collapsed summary for a tool call row. */
+export function toolHeadline(
+  toolName: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  args: Record<string, any>,
+  exec: ToolExec | undefined,
+): string {
+  const status = !exec
+    ? '⋯ waiting'
+    : exec.done
+      ? (exec.isError ? '✗ error' : '✓ done')
+      : '⋯ running'
+
+  switch (toolName) {
+    case 'bash': {
+      const cmd = String(args.command ?? '')
+      return `bash  ${cmd}  ${status}`
+    }
+    case 'read': {
+      const p = String(args.path ?? '')
+      return `read  ${p}  ${status}`
+    }
+    case 'edit': {
+      const p = String(args.path ?? '')
+      if (exec?.done && !exec.isError) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const patch = (exec.details as any)?.patch ?? ''
+        const { added, removed } = parseDiffStats(patch)
+        return `edit  ${p}  +${added} −${removed}  ${status}`
+      }
+      return `edit  ${p}  ${status}`
+    }
+    case 'write': {
+      const p = String(args.path ?? '')
+      return `write  ${p}  ${status}`
+    }
+    default: {
+      return `${toolName}  ${status}`
+    }
+  }
+}
+
+/** Parse a unified diff into renderable lines tagged with a CSS class. */
+export function renderDiffLines(patch: string): Array<{ cls: string; text: string }> {
+  if (!patch) return []
+  return patch.split('\n').map(line => {
+    if (line.startsWith('+') && !line.startsWith('+++')) return { cls: 'pi-session-tool-diff-add', text: line }
+    if (line.startsWith('-') && !line.startsWith('---')) return { cls: 'pi-session-tool-diff-del', text: line }
+    if (line.startsWith('@@')) return { cls: 'pi-session-tool-diff-meta', text: line }
+    return { cls: '', text: line }
+  })
+}
 // ---------------------------------------------------------------------------
 // Helper: update toolExecMap on the last AssistantItem
 // ---------------------------------------------------------------------------
@@ -231,6 +299,8 @@ export function reduceItems(items: RenderItem[], ev: Record<string, unknown>): R
       return updateLastAssistantToolExec(items, toolCallId, existing => ({
         ...(existing ?? { toolCallId, toolName: '', args: {}, output: '', done: false, isError: false }),
         output: resultStr,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        details: (ev.result as any)?.details ?? undefined,
         done: true,
         isError: Boolean(ev.isError),
       }))
@@ -261,27 +331,52 @@ function wsUrl(sessionId: string): string {
 // ---------------------------------------------------------------------------
 
 function ToolBlock({ block, exec }: { block: ToolCallContent; exec: ToolExec | undefined }) {
-  const name = block.name
-  const argsStr = (() => {
-    try { return JSON.stringify(block.arguments) } catch { return '' }
-  })()
+  const [open, setOpen] = useState(false)
+  const headline = toolHeadline(block.name, block.arguments, exec)
 
-  const statusLine = !exec
-    ? '⋯ waiting'
-    : exec.done
-      ? (exec.isError ? '✗ error' : '✓ done')
-      : '⋯ running'
+  // Determine whether there is any detail content to show
+  const hasDetail = !!(exec && (exec.output || (block.name === 'write' && block.arguments.content)))
+
+  // Detail panel content varies by tool
+  function DetailContent() {
+    if (!exec) return null
+    if (block.name === 'edit') {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const patch = (exec.details as any)?.patch ?? ''
+      const lines = renderDiffLines(patch)
+      if (!lines.length) return <span class="pi-session-tool-detail-empty">(no diff)</span>
+      return (
+        <>
+          {lines.map((l, i) => (
+            <span key={i} class={l.cls || 'pi-session-tool-diff-ctx'}>{l.text}{"\n"}</span>
+          ))}
+        </>
+      )
+    }
+    if (block.name === 'write') {
+      const content = String(block.arguments.content ?? '')
+      return <>{content}</>
+    }
+    // bash, read, and fallback: plain output
+    return <>{exec.output || '(no output)'}</>
+  }
 
   return (
-    <div class="pi-session-tool">
-      <div class="pi-session-tool-header">┌─ {name} {'─'.repeat(Math.max(0, 42 - name.length))}</div>
-      {argsStr && <div class="pi-session-tool-args">│ {argsStr}</div>}
-      {exec && exec.output && exec.output.split('\n').map((line, i) => (
-        <div key={i} class="pi-session-tool-output">│ {line}</div>
-      ))}
-      <div class={`pi-session-tool-footer ${exec?.isError ? 'pi-session-tool-error' : exec?.done ? 'pi-session-tool-done' : ''}`}>
-        └─ {statusLine} {'─'.repeat(Math.max(0, 40 - statusLine.length))}
-      </div>
+    <div class="pi-session-tool-row">
+      <button
+        class={`pi-session-tool-headline${exec?.isError ? ' pi-session-tool-headline-err' : exec?.done ? ' pi-session-tool-headline-done' : ''}`}
+        type="button"
+        onClick={() => hasDetail && setOpen(o => !o)}
+        style={hasDetail ? undefined : { cursor: 'default' }}
+      >
+        <span class="pi-session-tool-chevron">{open ? '▼' : '▶'}</span>
+        {headline}
+      </button>
+      {open && hasDetail && (
+        <pre class="pi-session-tool-detail">
+          <DetailContent />
+        </pre>
+      )}
     </div>
   )
 }

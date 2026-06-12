@@ -1038,7 +1038,14 @@ func serve(stderr io.Writer) int {
 	// ── Sessions ──
 
 	mux.HandleFunc("GET /v1/sessions", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, map[string]any{"ok": true, "data": sessions.List()})
+		all := sessions.List()
+		alive := all[:0]
+		for _, s := range all {
+			if s.Alive {
+				alive = append(alive, s)
+			}
+		}
+		writeJSON(w, map[string]any{"ok": true, "data": alive})
 	})
 
 	// Conversation lookup — resolve dead conversations by (kind, slug)
