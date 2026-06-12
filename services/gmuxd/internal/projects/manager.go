@@ -52,21 +52,24 @@ func (m *Manager) SeedIfEmpty() {
 // If fn returns false, the update is aborted (no save, no broadcast).
 func (m *Manager) Update(fn func(s *State) bool) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	state, err := Load(m.stateDir)
 	if err != nil {
+		m.mu.Unlock()
 		return err
 	}
 
 	if !fn(state) {
+		m.mu.Unlock()
 		return nil // aborted by fn
 	}
 
 	if err := state.Save(m.stateDir); err != nil {
+		m.mu.Unlock()
 		return err
 	}
 
+	m.mu.Unlock()
 	if m.Broadcast != nil {
 		m.Broadcast()
 	}
