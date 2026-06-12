@@ -67,11 +67,14 @@ func embeddedHandler() http.Handler {
 		if _, err := fs.Stat(sub, fsPath); err == nil {
 			if strings.HasPrefix(fsPath, "assets/") {
 				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			} else if fsPath == "index.html" {
+				w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 			}
 			fileServer.ServeHTTP(w, r)
 			return
 		}
 
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 		r.URL.Path = "/"
 		fileServer.ServeHTTP(w, r)
 	})
