@@ -56,6 +56,17 @@ func TestHelperProcess(t *testing.T) {
 				fmt.Println(line)
 			}
 		}
+	case "require-pi-env":
+		missing := []string{}
+		for _, key := range []string{"PI_CODING_AGENT_DIR", "AWS_PROFILE", "AWS_REGION"} {
+			if os.Getenv(key) == "" {
+				missing = append(missing, key)
+			}
+		}
+		if len(missing) > 0 {
+			fmt.Fprintf(os.Stderr, "missing required env: %s\n", strings.Join(missing, ","))
+			os.Exit(42)
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "pirpc test helper: unknown mode %q\n", mode)
 		os.Exit(1)
@@ -339,6 +350,18 @@ func TestResponseLinesNotBroadcast(t *testing.T) {
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
+	waitFor(t, 3*time.Second, "conn registered", func() bool {
+		m.mu.Lock()
+		proc := m.sessions["sess-6"]
+		m.mu.Unlock()
+		if proc == nil {
+			return false
+		}
+		proc.mu.Lock()
+		defer proc.mu.Unlock()
+		return len(proc.conns) == 1
+	})
+
 	// Send an event line directly to the subprocess — it echoes back as an event.
 	// The echo should arrive at the client.
 	want := `{"type":"agent_start"}`
@@ -438,4 +461,37 @@ func TestPromptTextTranslation(t *testing.T) {
 	proc := m.sessions["sess-7"]
 	m.mu.Unlock()
 	proc.stdin.Close()
+}
+
+func TestLaunchProvidesPiRPCEnvironmentFallbacks(t *testing.T) {
+	t.Setenv("PI_CODING_AGENT_DIR", "")
+	t.Setenv("AWS_PROFILE", "")
+	t.Setenv("AWS_REGION", "")
+	t.Setenv("GO_WANT_HELPER_PROCESS", "1")
+
+	s := newTestStore("sess-env")
+	m := New(s)
+
+	if err := m.Launch("sess-env", helperCmd("require-pi-env"), ""); err != nil {
+		t.Fatalf("Launch(require-pi-env): %v", err)
+	}
+
+	var proc *subprocess
+	waitFor(t, 3*time.Second, "env helper started", func() bool {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		proc = m.sessions["sess-env"]
+		return proc != nil
+	})
+
+	proc.stdin.Close()
+
+	waitFor(t, 3*time.Second, "env helper exited", func() bool {
+		sess, _ := s.Get("sess-env")
+		return !sess.Alive
+	})
+
+	if proc.cmd.ProcessState == nil || proc.cmd.ProcessState.ExitCode() != 0 {
+		t.Fatalf("env helper exited with state %v", proc.cmd.ProcessState)
+	}
 }

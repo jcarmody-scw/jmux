@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -45,6 +46,47 @@ func New(s *store.Store) *Manager {
 	}
 }
 
+var defaultPiRPCEnv = map[string]string{
+	"AWS_PROFILE": "scw-agentic-bedrock-sso",
+	"AWS_REGION":  "eu-central-1",
+}
+
+func piRPCEnv() []string {
+	env := os.Environ()
+	if os.Getenv("PI_CODING_AGENT_DIR") == "" {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			env = upsertEnv(env, "PI_CODING_AGENT_DIR", filepath.Join(home, ".pi", "agent"))
+		}
+	}
+	for key, val := range defaultPiRPCEnv {
+		if os.Getenv(key) == "" {
+			env = upsertEnv(env, key, val)
+		}
+	}
+	return env
+}
+
+func upsertEnv(env []string, key, val string) []string {
+	prefix := key + "="
+	for i, entry := range env {
+		if len(entry) >= len(prefix) && entry[:len(prefix)] == prefix {
+			env[i] = prefix + val
+			return env
+		}
+	}
+	return append(env, prefix+val)
+}
+
+func envHas(env []string, key string) bool {
+	prefix := key + "="
+	for _, entry := range env {
+		if len(entry) >= len(prefix) && entry[:len(prefix)] == prefix {
+			return entry != prefix
+		}
+	}
+	return false
+}
+
 // Launch spawns the subprocess for a session that is already registered
 // in the store. argv is the full command + args (e.g. ["pi", "--mode", "rpc"]).
 // dir is the working directory for the subprocess.
@@ -56,6 +98,8 @@ func (m *Manager) Launch(sessionID string, argv []string, dir string) error {
 	c := exec.Command(argv[0], argv[1:]...)
 	c.Dir = dir
 	c.Stderr = os.Stderr // surface subprocess errors in the gmuxd log
+	c.Env = piRPCEnv()
+	log.Printf("pirpc: %s: env PI_CODING_AGENT_DIR=%t AWS_PROFILE=%t AWS_REGION=%t", sessionID, envHas(c.Env, "PI_CODING_AGENT_DIR"), envHas(c.Env, "AWS_PROFILE"), envHas(c.Env, "AWS_REGION"))
 
 	stdin, err := c.StdinPipe()
 	if err != nil {
@@ -117,7 +161,9 @@ func (m *Manager) readLoop(sessionID string, proc *subprocess, stdout io.Reader)
 			Command string `json:"command"`
 			Success bool   `json:"success"`
 			Data    struct {
-				Model       struct{ ID string `json:"id"` } `json:"model"`
+				Model struct {
+					ID string `json:"id"`
+				} `json:"model"`
 				SessionFile string `json:"sessionFile"`
 				SessionID   string `json:"sessionId"`
 			} `json:"data"`
@@ -141,7 +187,7 @@ func (m *Manager) readLoop(sessionID string, proc *subprocess, stdout io.Reader)
 				// Synthesise session_ready so the frontend shows "connected · <model>".
 				synthesised, _ := json.Marshal(map[string]string{
 					"type":        "session_ready",
-					"model":        modelID,
+					"model":       modelID,
 					"sessionFile": sessFile,
 				})
 				line = synthesised
