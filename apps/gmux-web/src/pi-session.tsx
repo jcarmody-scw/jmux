@@ -321,9 +321,17 @@ const WS_CAP_MS = 8000
 // Auto-scroll threshold: only scroll to bottom when within this many px of the bottom.
 const SCROLL_NEAR_BOTTOM_PX = 60
 
+
 function wsUrl(sessionId: string): string {
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
-  return `${proto}//${location.host}/ws/${sessionId}`
+  const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:'
+  // In dev (vite), VITE_DEV_PROXY_PORT is the daemon port and location.port is
+  // the vite port. Connect directly to the daemon so auth cookies (which are
+  // not port-scoped) are included and we don't rely on vite WS proxying.
+  const daemonPort = import.meta.env.VITE_DEV_PROXY_PORT as string | undefined
+  const host = (daemonPort && daemonPort !== location.port)
+    ? `${location.hostname}:${daemonPort}`
+    : location.host
+  return `${wsProto}//${host}/ws/${sessionId}`
 }
 
 // ---------------------------------------------------------------------------

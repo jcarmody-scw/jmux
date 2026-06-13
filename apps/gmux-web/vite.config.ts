@@ -93,10 +93,6 @@ export default defineConfig({
         target: `http://${gmuxdHost}:${gmuxdPort}`,
         headers: proxyHeaders,
       },
-      '/ws': {
-        target: `http://${gmuxdHost}:${gmuxdPort}`,
-        ws: true,
-      },
     },
   },
   optimizeDeps: {

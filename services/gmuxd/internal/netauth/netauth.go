@@ -85,6 +85,8 @@ func MiddlewareWithPort(token string, port int, next http.Handler) http.Handler 
 
 		// Distinguish API requests from browser navigation.
 		if isAPIRequest(r) {
+			log.Printf("netauth: unauthorized %s %s (upgrade=%q cookie-names=%v)",
+				r.Method, r.URL.Path, r.Header.Get("Upgrade"), cookieNames(r))
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)
 			_, _ = w.Write([]byte(`{"ok":false,"error":{"code":"unauthorized","message":"valid bearer token or session cookie required"}}`))
@@ -268,4 +270,13 @@ func serveLoginPage(w http.ResponseWriter, errMsg string) {
 </div>
 </body>
 </html>`))
+}
+
+// cookieNames returns the names of all cookies in the request, for logging.
+func cookieNames(r *http.Request) []string {
+	names := make([]string, 0, len(r.Cookies()))
+	for _, c := range r.Cookies() {
+		names = append(names, c.Name)
+	}
+	return names
 }

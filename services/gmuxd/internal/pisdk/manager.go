@@ -109,6 +109,7 @@ func (m *Manager) readLoop(sessionID string, proc *subprocess, stdout io.Reader)
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
+		log.Printf("pisdk: %s: stdout: %s", sessionID, truncate(line, 200))
 
 		// Peek at type (and optional fields used for special handling).
 		var peek struct {
@@ -163,6 +164,7 @@ func (m *Manager) readLoop(sessionID string, proc *subprocess, stdout io.Reader)
 		conns := append([]*websocket.Conn(nil), proc.conns...)
 		proc.mu.Unlock()
 
+		log.Printf("pisdk: %s: broadcast to %d client(s): type=%s", sessionID, len(conns), peek.Type)
 		for _, conn := range conns {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			if err := conn.Write(ctx, websocket.MessageText, msg); err != nil {
@@ -235,6 +237,7 @@ func (m *Manager) HandleWebSocket(w http.ResponseWriter, r *http.Request, sessio
 		log.Printf("pisdk: ws accept %s: %v", sessionID, err)
 		return
 	}
+	log.Printf("pisdk: ws client connected %s (remote=%s)", sessionID, r.RemoteAddr)
 
 	// Register this connection for broadcast.
 	proc.mu.Lock()
@@ -269,6 +272,7 @@ func (m *Manager) HandleWebSocket(w http.ResponseWriter, r *http.Request, sessio
 		}
 		proc.mu.Unlock()
 		conn.Close(websocket.StatusNormalClosure, "")
+		log.Printf("pisdk: ws client disconnected %s", sessionID)
 	}()
 
 	// Relay: client messages → subprocess stdin.
@@ -278,10 +282,12 @@ func (m *Manager) HandleWebSocket(w http.ResponseWriter, r *http.Request, sessio
 	for {
 		_, data, err := conn.Read(ctx)
 		if err != nil {
+			log.Printf("pisdk: %s: ws read closed: %v", sessionID, err)
 			return
 		}
-		data = translateToRPC(data)
-		line := append(data, '\n')
+		translated := translateToRPC(data)
+		log.Printf("pisdk: %s: ws→stdin: %s", sessionID, truncate(translated, 200))
+		line := append(translated, '\n')
 		if _, err := proc.stdin.Write(line); err != nil {
 			log.Printf("pisdk: %s: stdin write: %v", sessionID, err)
 			return
@@ -368,4 +374,12 @@ func translateToRPC(data []byte) []byte {
 		return out
 	}
 	return data
+}
+
+// truncate returns s truncated to maxLen bytes with a suffix if cut.
+func truncate(s []byte, maxLen int) string {
+	if len(s) <= maxLen {
+		return string(s)
+	}
+	return string(s[:maxLen]) + "…"
 }

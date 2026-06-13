@@ -54,6 +54,16 @@ tasks:
       # ── Prepare directories and config ──
       mkdir -p "$DEV_SOCKET_DIR" "$DEV_STATE_DIR/config/gmux" "$DEV_STATE_DIR/state" "$DEV_STATE_DIR/pi-agent"
 
+      # Bootstrap pi model config from the parent PI_CODING_AGENT_DIR so the dev
+      # daemon uses the same model/provider settings as the host pi session.
+      _PARENT_PI_DIR="${PI_CODING_AGENT_DIR:-}"
+      if [[ -n "$_PARENT_PI_DIR" ]]; then
+        for _f in settings.json models.json; do
+          if [[ -f "$_PARENT_PI_DIR/$_f" && ! -f "$DEV_STATE_DIR/pi-agent/$_f" ]]; then
+            cp "$_PARENT_PI_DIR/$_f" "$DEV_STATE_DIR/pi-agent/$_f"
+          fi
+        done
+      fi
       cat > "$DEV_STATE_DIR/config/gmux/host.toml" << EOF
       port = $DEV_PORT
 
