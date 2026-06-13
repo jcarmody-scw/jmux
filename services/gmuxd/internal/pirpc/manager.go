@@ -144,9 +144,9 @@ func (m *Manager) Launch(sessionID string, argv []string, dir string) error {
 // readLoop reads JSON-line events from stdout and broadcasts them to all
 // connected WebSocket clients.
 //
-// RPC response lines (type=="response") are not forwarded to clients — they are
-// internal protocol acknowledgements. The startup get_state response is handled
-// specially to synthesise a session_ready event.
+// The startup get_state response is handled specially to synthesise a
+// session_ready event. Other RPC response lines are forwarded to clients so
+// request/response commands such as get_commands can be consumed by the UI.
 func (m *Manager) readLoop(sessionID string, proc *subprocess, stdout io.Reader) {
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 256*1024), 256*1024)
@@ -175,26 +175,24 @@ func (m *Manager) readLoop(sessionID string, proc *subprocess, stdout io.Reader)
 			continue
 		}
 
-		// RPC response lines are internal — filter them before broadcast.
 		// The startup get_state response is used to synthesise session_ready.
-		if peek.Type == "response" {
-			if peek.Command == "get_state" && peek.Success && peek.Data.Model.ID != "" {
-				modelID := peek.Data.Model.ID
-				sessFile := peek.Data.SessionFile
-				m.store.Update(sessionID, func(s *store.Session) {
-					s.Subtitle = modelID
-				})
-				// Synthesise session_ready so the frontend shows "connected · <model>".
-				synthesised, _ := json.Marshal(map[string]string{
-					"type":        "session_ready",
-					"model":       modelID,
-					"sessionFile": sessFile,
-				})
-				line = synthesised
-				// Fall through to broadcast the synthesised event.
-			} else {
-				continue // drop all other response lines
-			}
+		// All other response lines are part of the public RPC protocol and must be
+		// forwarded to clients, for example get_commands responses for slash command
+		// discovery.
+		if peek.Type == "response" && peek.Command == "get_state" && peek.Success && peek.Data.Model.ID != "" {
+			modelID := peek.Data.Model.ID
+			sessFile := peek.Data.SessionFile
+			m.store.Update(sessionID, func(s *store.Session) {
+				s.Subtitle = modelID
+			})
+			// Synthesise session_ready so the frontend shows "connected · <model>".
+			synthesised, _ := json.Marshal(map[string]string{
+				"type":        "session_ready",
+				"model":       modelID,
+				"sessionFile": sessFile,
+			})
+			line = synthesised
+			peek.Type = "session_ready"
 		}
 
 		// Legacy: direct session_ready (kept for test helpers / future use).

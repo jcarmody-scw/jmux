@@ -51,6 +51,8 @@ func TestHelperProcess(t *testing.T) {
 			}
 			if cmd["type"] == "get_state" {
 				fmt.Println(`{"type":"response","command":"get_state","success":true,"data":{"model":{"id":"test-model"},"sessionFile":"/tmp/test.jsonl","sessionId":"abc"}}`)
+			} else if cmd["type"] == "get_commands" {
+				fmt.Println(`{"id":"commands-1","type":"response","command":"get_commands","success":true,"data":{"commands":[{"name":"auth-refresh","description":"Refresh auth","source":"extension"}]}}`)
 			} else {
 				// Echo back as an event so broadcast tests can verify receipt.
 				fmt.Println(line)
@@ -323,15 +325,17 @@ func TestRpcSessionReadyUpdatesSubtitle(t *testing.T) {
 	}
 }
 
-// TestResponseLinesNotBroadcast verifies that RPC response lines are filtered
-// out and never forwarded to WebSocket clients.
-func TestResponseLinesNotBroadcast(t *testing.T) {
+// TestCommandResponseLinesBroadcast verifies that non-startup RPC response lines
+// are forwarded to WebSocket clients. The frontend needs these responses for
+// requests such as get_commands, while the startup get_state response remains
+// converted into session_ready internally.
+func TestCommandResponseLinesBroadcast(t *testing.T) {
 	s := newTestStore("sess-6")
 	m := New(s)
 
 	launchHelper(t, m, "sess-6", "rpc-sim")
 
-	// Wait for startup get_state to be consumed.
+	// Wait for startup get_state to be consumed and converted into session_ready.
 	waitFor(t, 5*time.Second, "subtitle set", func() bool {
 		sess, _ := s.Get("sess-6")
 		return sess.Subtitle != ""
@@ -362,13 +366,14 @@ func TestResponseLinesNotBroadcast(t *testing.T) {
 		return len(proc.conns) == 1
 	})
 
-	// Send an event line directly to the subprocess — it echoes back as an event.
-	// The echo should arrive at the client.
-	want := `{"type":"agent_start"}`
 	m.mu.Lock()
 	proc := m.sessions["sess-6"]
 	m.mu.Unlock()
-	if _, err := proc.stdin.Write([]byte(want + "\n")); err != nil {
+	if proc == nil {
+		t.Fatal("subprocess not found")
+	}
+
+	if _, err := proc.stdin.Write([]byte(`{"type":"get_commands","id":"commands-1"}` + "\n")); err != nil {
 		t.Fatalf("stdin write: %v", err)
 	}
 
@@ -378,15 +383,26 @@ func TestResponseLinesNotBroadcast(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ws read: %v", err)
 	}
-	got := string(data)
 
-	// The response line for get_state must NOT have been forwarded.
-	// The agent_start event SHOULD have arrived.
-	if strings.Contains(got, "\"command\":") {
-		t.Errorf("response line leaked to client: %s", got)
+	var got struct {
+		ID      string `json:"id"`
+		Type    string `json:"type"`
+		Command string `json:"command"`
+		Success bool   `json:"success"`
+		Data    struct {
+			Commands []struct {
+				Name string `json:"name"`
+			} `json:"commands"`
+		} `json:"data"`
 	}
-	if got != want {
-		t.Errorf("got %q, want %q", got, want)
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	if got.ID != "commands-1" || got.Type != "response" || got.Command != "get_commands" || !got.Success {
+		t.Fatalf("unexpected response: %s", data)
+	}
+	if len(got.Data.Commands) != 1 || got.Data.Commands[0].Name != "auth-refresh" {
+		t.Fatalf("commands not forwarded: %s", data)
 	}
 
 	proc.stdin.Close()
