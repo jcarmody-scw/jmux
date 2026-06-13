@@ -1,4 +1,4 @@
-package pisdk
+package pirpc
 
 import (
 	"bufio"
@@ -57,7 +57,7 @@ func TestHelperProcess(t *testing.T) {
 			}
 		}
 	default:
-		fmt.Fprintf(os.Stderr, "pisdk test helper: unknown mode %q\n", mode)
+		fmt.Fprintf(os.Stderr, "pirpc test helper: unknown mode %q\n", mode)
 		os.Exit(1)
 	}
 	os.Exit(0)
@@ -81,7 +81,7 @@ func helperCmd(mode string) []string {
 
 func newTestStore(id string) *store.Store {
 	s := store.New()
-	s.Upsert(store.Session{ID: id, Kind: "pi-sdk", Alive: true})
+	s.Upsert(store.Session{ID: id, Kind: "pi-rpc", Alive: true})
 	return s
 }
 

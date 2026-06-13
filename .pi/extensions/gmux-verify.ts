@@ -305,13 +305,13 @@ export default function (pi: ExtensionAPI) {
 			"'prod' (bug repro or post-install verify — prod daemon only).",
 			"route is the path after the slug, e.g. 'sessions' or '' for the project home.",
 			"After navigating, two window helpers are available via agent-browser eval:",
-			"  window.__gmuxLaunchPiSdk(cwd) — POST /v1/launch; returns {data:{session_id}, ok}.",
-			"  window.__gmuxSendMessage(text) — send a message to the open pi-sdk session.",
+			"  window.__gmuxLaunchPiRpc(cwd) — POST /v1/launch; returns {data:{session_id}, ok}.",
+			"  window.__gmuxSendMessage(text) — send a message to the open pi-rpc session.",
 		].join(" "),
 		promptGuidelines: [
 			"Always use gmux_verify instead of manually constructing TOKEN= commands or agent-browser navigate calls.",
 			`frontend: UI/React/CSS only, no Go changes. full: any .go file changed. prod: reproduce a bug or verify after moon run :install.`,
-			"To test a pi-sdk session: call gmux_verify to authenticate, then use agent-browser eval with __gmuxLaunchPiSdk and __gmuxSendMessage.",
+			"To test a pi-rpc session: call gmux_verify to authenticate, then use agent-browser eval with __gmuxLaunchPiRpc and __gmuxSendMessage.",
 		],
 		parameters: Type.Object({
 			scenario: Type.Union(

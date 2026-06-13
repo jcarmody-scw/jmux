@@ -49,7 +49,7 @@ import (
 	"github.com/gmuxapp/gmux/services/gmuxd/internal/tsdiscovery"
 	"github.com/gmuxapp/gmux/services/gmuxd/internal/unixipc"
 	"github.com/gmuxapp/gmux/services/gmuxd/internal/update"
-	"github.com/gmuxapp/gmux/services/gmuxd/internal/pisdk"
+	"github.com/gmuxapp/gmux/services/gmuxd/internal/pirpc"
 	"github.com/gmuxapp/gmux/services/gmuxd/internal/gitwatcher"
 	"github.com/gmuxapp/gmux/services/gmuxd/internal/wsproxy"
 	"github.com/google/uuid"
@@ -562,7 +562,7 @@ func serve(stderr io.Writer) int {
 	launchConfig := discoverLaunchers()
 
 	sessions := store.New()
-	piSDKManager := pisdk.New(sessions)
+	piSDKManager := pirpc.New(sessions)
 
 	// sessionmeta persists per-session records so dead sessions
 	// survive a gmuxd restart. Sweep on startup repopulates the
@@ -1215,11 +1215,11 @@ func serve(stderr io.Writer) int {
 					fileMon.NotifyNewSession(sessionID)
 				}
 			if err := piSDKManager.Launch(sessionID, subCmd, cwd); err != nil {
-				log.Printf("launch: pi-sdk subprocess failed: %v", err)
+				log.Printf("launch: pi-rpc subprocess failed: %v", err)
 				writeError(w, http.StatusInternalServerError, "launch_failed", err.Error())
 				return
 			}
-				log.Printf("launch: pi-sdk session %s cwd=%s", sessionID, cwd)
+				log.Printf("launch: pi-rpc session %s cwd=%s", sessionID, cwd)
 				writeJSON(w, map[string]any{
 					"ok":   true,
 					"data": map[string]any{"session_id": sessionID},
@@ -1563,7 +1563,7 @@ func serve(stderr io.Writer) int {
 			}
 		}
 
-		// Check if this is a subprocess (pi-sdk / pi-sdk-sbx) session.
+		// Check if this is a subprocess (pi-rpc / pi-rpc-sbx) session.
 		if sess, ok := sessions.Get(sessionID); ok {
 			if a := adapters.FindByKind(sess.Kind); a != nil {
 				if _, isSub := a.(adapter.SubprocessAdapter); isSub {

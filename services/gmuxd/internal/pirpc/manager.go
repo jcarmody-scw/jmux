@@ -1,8 +1,8 @@
-// Package pisdk manages pi-sdk subprocess sessions in gmuxd.
+// Package pirpc manages pi-rpc subprocess sessions in gmuxd.
 // Each session owns one subprocess (pi --mode rpc) that communicates via JSON
 // lines on stdin/stdout. This package handles subprocess lifecycle, WebSocket
 // fan-out, and store updates.
-package pisdk
+package pirpc
 
 import (
 	"bufio"
@@ -21,7 +21,7 @@ import (
 	"nhooyr.io/websocket"
 )
 
-// Manager manages pi-sdk subprocess sessions.
+// Manager manages pi-rpc subprocess sessions.
 type Manager struct {
 	mu       sync.Mutex
 	sessions map[string]*subprocess
@@ -50,7 +50,7 @@ func New(s *store.Store) *Manager {
 // dir is the working directory for the subprocess.
 func (m *Manager) Launch(sessionID string, argv []string, dir string) error {
 	if len(argv) == 0 {
-		return fmt.Errorf("pisdk: empty command")
+		return fmt.Errorf("pirpc: empty command")
 	}
 
 	c := exec.Command(argv[0], argv[1:]...)
@@ -59,15 +59,15 @@ func (m *Manager) Launch(sessionID string, argv []string, dir string) error {
 
 	stdin, err := c.StdinPipe()
 	if err != nil {
-		return fmt.Errorf("pisdk: stdin pipe: %w", err)
+		return fmt.Errorf("pirpc: stdin pipe: %w", err)
 	}
 	stdout, err := c.StdoutPipe()
 	if err != nil {
-		return fmt.Errorf("pisdk: stdout pipe: %w", err)
+		return fmt.Errorf("pirpc: stdout pipe: %w", err)
 	}
 
 	if err := c.Start(); err != nil {
-		return fmt.Errorf("pisdk: start: %w", err)
+		return fmt.Errorf("pirpc: start: %w", err)
 	}
 
 	proc := &subprocess{
@@ -87,13 +87,13 @@ func (m *Manager) Launch(sessionID string, argv []string, dir string) error {
 
 	// Request state immediately so readLoop can synthesise session_ready.
 	if _, err := stdin.Write([]byte(`{"id":"startup","type":"get_state"}` + "\n")); err != nil {
-		log.Printf("pisdk: %s: get_state write: %v", sessionID, err)
+		log.Printf("pirpc: %s: get_state write: %v", sessionID, err)
 	}
 
 	go m.readLoop(sessionID, proc, stdout)
 	go m.waitLoop(sessionID, proc)
 
-	log.Printf("pisdk: launched session %s pid=%d", sessionID, c.Process.Pid)
+	log.Printf("pirpc: launched session %s pid=%d", sessionID, c.Process.Pid)
 	return nil
 }
 
@@ -109,7 +109,7 @@ func (m *Manager) readLoop(sessionID string, proc *subprocess, stdout io.Reader)
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
-		log.Printf("pisdk: %s: stdout: %s", sessionID, truncate(line, 200))
+		log.Printf("pirpc: %s: stdout: %s", sessionID, truncate(line, 200))
 
 		// Peek at type (and optional fields used for special handling).
 		var peek struct {
@@ -121,11 +121,11 @@ func (m *Manager) readLoop(sessionID string, proc *subprocess, stdout io.Reader)
 				SessionFile string `json:"sessionFile"`
 				SessionID   string `json:"sessionId"`
 			} `json:"data"`
-			// Legacy direct fields (session_ready from old pi-sdk-lib).
+			// Legacy direct fields (session_ready from old pi-rpc-lib).
 			Model string `json:"model"`
 		}
 		if err := json.Unmarshal(line, &peek); err != nil {
-			log.Printf("pisdk: %s: bad JSON from subprocess: %v", sessionID, err)
+			log.Printf("pirpc: %s: bad JSON from subprocess: %v", sessionID, err)
 			continue
 		}
 
@@ -164,18 +164,18 @@ func (m *Manager) readLoop(sessionID string, proc *subprocess, stdout io.Reader)
 		conns := append([]*websocket.Conn(nil), proc.conns...)
 		proc.mu.Unlock()
 
-		log.Printf("pisdk: %s: broadcast to %d client(s): type=%s", sessionID, len(conns), peek.Type)
+		log.Printf("pirpc: %s: broadcast to %d client(s): type=%s", sessionID, len(conns), peek.Type)
 		for _, conn := range conns {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			if err := conn.Write(ctx, websocket.MessageText, msg); err != nil {
-				log.Printf("pisdk: %s: write to client: %v", sessionID, err)
+				log.Printf("pirpc: %s: write to client: %v", sessionID, err)
 			}
 			cancel()
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		log.Printf("pisdk: %s: stdout read error: %v", sessionID, err)
+		log.Printf("pirpc: %s: stdout read error: %v", sessionID, err)
 	}
 }
 
@@ -212,10 +212,10 @@ func (m *Manager) waitLoop(sessionID string, proc *subprocess) {
 	delete(m.sessions, sessionID)
 	m.mu.Unlock()
 
-	log.Printf("pisdk: session %s exited (code %d)", sessionID, exitCode)
+	log.Printf("pirpc: session %s exited (code %d)", sessionID, exitCode)
 }
 
-// HandleWebSocket accepts a WebSocket upgrade for a pi-sdk session, adds the
+// HandleWebSocket accepts a WebSocket upgrade for a pi-rpc session, adds the
 // connection to the broadcast fan-out, and relays incoming client messages to
 // the subprocess stdin as JSON lines.
 func (m *Manager) HandleWebSocket(w http.ResponseWriter, r *http.Request, sessionID string) {
@@ -234,10 +234,10 @@ func (m *Manager) HandleWebSocket(w http.ResponseWriter, r *http.Request, sessio
 		InsecureSkipVerify: true,
 	})
 	if err != nil {
-		log.Printf("pisdk: ws accept %s: %v", sessionID, err)
+		log.Printf("pirpc: ws accept %s: %v", sessionID, err)
 		return
 	}
-	log.Printf("pisdk: ws client connected %s (remote=%s)", sessionID, r.RemoteAddr)
+	log.Printf("pirpc: ws client connected %s (remote=%s)", sessionID, r.RemoteAddr)
 
 	// Register this connection for broadcast.
 	proc.mu.Lock()
@@ -272,7 +272,7 @@ func (m *Manager) HandleWebSocket(w http.ResponseWriter, r *http.Request, sessio
 		}
 		proc.mu.Unlock()
 		conn.Close(websocket.StatusNormalClosure, "")
-		log.Printf("pisdk: ws client disconnected %s", sessionID)
+		log.Printf("pirpc: ws client disconnected %s", sessionID)
 	}()
 
 	// Relay: client messages → subprocess stdin.
@@ -282,14 +282,14 @@ func (m *Manager) HandleWebSocket(w http.ResponseWriter, r *http.Request, sessio
 	for {
 		_, data, err := conn.Read(ctx)
 		if err != nil {
-			log.Printf("pisdk: %s: ws read closed: %v", sessionID, err)
+			log.Printf("pirpc: %s: ws read closed: %v", sessionID, err)
 			return
 		}
 		translated := translateToRPC(data)
-		log.Printf("pisdk: %s: ws→stdin: %s", sessionID, truncate(translated, 200))
+		log.Printf("pirpc: %s: ws→stdin: %s", sessionID, truncate(translated, 200))
 		line := append(translated, '\n')
 		if _, err := proc.stdin.Write(line); err != nil {
-			log.Printf("pisdk: %s: stdin write: %v", sessionID, err)
+			log.Printf("pirpc: %s: stdin write: %v", sessionID, err)
 			return
 		}
 	}

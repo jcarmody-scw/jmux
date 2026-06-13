@@ -1,4 +1,4 @@
-// PiSessionView — terminal-style chat UI for pi-sdk and pi-sdk-sbx sessions.
+// PiSessionView — terminal-style chat UI for pi-rpc and pi-rpc-sbx sessions.
 // Connects to /ws/{session.id}, renders streaming events as a message list.
 import { type Session } from './types'
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks'
@@ -669,20 +669,20 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
 
   // Dev helper: expose sendMessage on window for agent-browser eval.
   // window.__gmuxSendMessage('text') sends a message to this session.
-  // window.__gmuxLaunchPiSdk(cwd) launches a new pi-sdk session (uses cookie auth).
+  // window.__gmuxLaunchPiRpc(cwd) launches a new pi-rpc session (uses cookie auth).
   useEffect(() => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const w = window as any
     w.__gmuxSendMessage = (text: string) => sendMessage(text)
-    w.__gmuxLaunchPiSdk = (cwd: string) =>
+    w.__gmuxLaunchPiRpc = (cwd: string) =>
       fetch('/v1/launch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ launcher_id: 'pi-sdk', cwd }),
+        body: JSON.stringify({ launcher_id: 'pi-rpc', cwd }),
       }).then(r => r.json())
     return () => {
       delete w.__gmuxSendMessage
-      delete w.__gmuxLaunchPiSdk
+      delete w.__gmuxLaunchPiRpc
     }
   }, [sendMessage])
 
@@ -770,7 +770,7 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
 // Export guard used by main.tsx
 // ---------------------------------------------------------------------------
 
-/** Returns true for sessions driven by the pi-sdk subprocess adapter. */
-export function isPiSDKSession(session: { kind: string }): boolean {
-  return session.kind === 'pi-sdk' || session.kind === 'pi-sdk-sbx'
+/** Returns true for sessions driven by the pi-rpc subprocess adapter. */
+export function isPiRPCSession(session: { kind: string }): boolean {
+  return session.kind === 'pi-rpc' || session.kind === 'pi-rpc-sbx'
 }
