@@ -53,6 +53,12 @@ interface UserItem {
   text: string
 }
 
+export interface CommandItem {
+  kind: 'command'
+  text: string
+  label: string
+}
+
 export interface AssistantItem {
   kind: 'assistant'
   blocks: ContentBlock[]
@@ -68,7 +74,7 @@ interface SystemItem {
   text: string
 }
 
-export type RenderItem = UserItem | AssistantItem | SystemItem
+export type RenderItem = UserItem | CommandItem | AssistantItem | SystemItem
 
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for tests)
@@ -105,6 +111,28 @@ export function getSystemText(event: any): string {
     default:
       return String(event.type ?? 'event')
   }
+}
+
+/** Return true when text is a non-empty slash command such as /help or /model sonnet. */
+export function isSlashCommand(text: string): boolean {
+  const trimmed = text.trimStart().trimEnd()
+  return /^\/\S+/.test(trimmed) && trimmed !== '/'
+}
+
+/** Return the slash command token for display, for example /model from /model sonnet. */
+export function slashCommandLabel(text: string): string {
+  const trimmed = text.trimStart()
+  const token = trimmed.split(/\s+/, 1)[0]
+  return /^\/\S+/.test(token) && token !== '/' ? token : '/command'
+}
+
+/** Create the local render item shown after user input is sent. */
+export function inputItemForText(text: string): UserItem | CommandItem {
+  const trimmed = text.trim()
+  if (isSlashCommand(trimmed)) {
+    return { kind: 'command', text: trimmed, label: slashCommandLabel(trimmed) }
+  }
+  return { kind: 'user', text: trimmed }
 }
 
 // ---------------------------------------------------------------------------
@@ -479,6 +507,14 @@ function RenderItemView({ item, isSticky, expandAllThinking }: { item: RenderIte
       </div>
     )
   }
+  if (item.kind === 'command') {
+    return (
+      <div class="pi-session-item pi-session-item-command">
+        <span class="pi-session-command-label">{item.label}</span>
+        <span class="pi-session-command-text">{item.text}</span>
+      </div>
+    )
+  }
   if (item.kind === 'assistant') {
     return <TurnBlock item={item} expandAllThinking={expandAllThinking} />
   }
@@ -657,7 +693,7 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
     const ws = wsRef.current
     if (!ws || ws.readyState !== WebSocket.OPEN) return
     ws.send(JSON.stringify({ type: 'prompt', text: trimmed }))
-    setItems(prev => [...prev, { kind: 'user', text: trimmed }])
+    setItems(prev => [...prev, inputItemForText(trimmed)])
     setInputText('')
   }, [])
 

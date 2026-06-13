@@ -3265,6 +3265,23 @@ a.home-host-link:hover {
   user-select: none;
 }
 
+.pi-session-item-command {
+  color: var(--text-muted);
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  background: rgba(79, 142, 247, 0.08);
+  border-left: 2px solid var(--accent);
+}
+
+.pi-session-command-label {
+  color: var(--accent);
+  font-weight: 600;
+  margin-right: 8px;
+}
+
+.pi-session-command-text {
+  color: var(--text);
+}
+
 /* Assistant text */
 .pi-session-text {
   color: var(--text);
