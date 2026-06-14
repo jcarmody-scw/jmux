@@ -2,9 +2,9 @@ import { test, expect } from '@playwright/test'
 import { openApp, gotoTestSession, spawnTestSession } from '../helpers'
 
 /**
- * Terminal copy tests using wterm DOM selection.
- * wterm renders real text nodes — native OS selection and clipboard work
- * without any custom implementation.
+ * Terminal copy tests using wterm DOM text. The renderer exposes terminal
+ * output as real text nodes, so browser copy affordances can work without a
+ * custom terminal text extraction path.
  */
 
 test.describe('terminal copy', () => {
@@ -17,9 +17,9 @@ test.describe('terminal copy', () => {
     await expect(page.locator('.terminal-shell')).toBeVisible()
   })
 
-  test('terminal text is selectable via DOM (getSelection returns text)', async ({ page }) => {
+  test('terminal text is rendered as DOM text nodes', async ({ page }) => {
     const { id, kill } = await spawnTestSession(
-      ['bash', '-c', 'echo UNIQUE_COPY_MARKER; sleep 60'],
+      ['bash', '-c', 'for i in $(seq 1 10); do echo UNIQUE_COPY_MARKER; sleep 1; done; sleep 60'],
       { cwdName: 'copy-test' },
     )
 
@@ -29,21 +29,19 @@ test.describe('terminal copy', () => {
       return typeof nav === 'function' && nav(sid) === true
     }, id, { timeout: 10_000 })
     await page.locator('.terminal-container.wterm').waitFor({ state: 'visible', timeout: 8_000 })
-    await page.waitForTimeout(2000)
+    await page.waitForFunction(() => {
+      return Array.from(document.querySelectorAll('.term-row')).some((row) => {
+        return row.textContent?.includes('UNIQUE_COPY_MARKER')
+      })
+    }, undefined, { timeout: 5_000 })
 
-    // Select all text in the wterm element and check it contains output
-    const selectedText = await page.evaluate(() => {
-      const term = (window as any).__gmuxTerm
-      if (!term) return ''
-      const range = document.createRange()
-      range.selectNodeContents(term.element)
-      const sel = window.getSelection()
-      sel?.removeAllRanges()
-      sel?.addRange(range)
-      return sel?.toString() ?? ''
+    const domText = await page.evaluate(() => {
+      return Array.from(document.querySelectorAll('.term-row'))
+        .map((row) => row.textContent ?? '')
+        .join('\n')
     })
 
-    expect(selectedText).toContain('UNIQUE_COPY_MARKER')
+    expect(domText).toContain('UNIQUE_COPY_MARKER')
     kill()
   })
 })

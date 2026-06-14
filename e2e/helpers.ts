@@ -201,11 +201,10 @@ export async function spawnTestSession(
   const cwd = path.join(workspace, cwdName)
   fs.mkdirSync(cwd, { recursive: true })
 
-  // Match the binary path conventions in global-setup.ts: bin/gmux
-  // relative to the gmux project root. __dirname is e2e/, so go up
-  // one level.
+  // Use the E2E-built binary from global-setup. Fall back to the prod
+  // output path for direct helper execution outside Playwright global setup.
   const projectRoot = path.resolve(__dirname, '..')
-  const gmuxBin = path.join(projectRoot, 'bin', 'gmux')
+  const gmuxBin = process.env.GMUX_TEST_GMUX_BIN || path.join(projectRoot, 'bin', 'prod', 'gmux')
 
   const env: Record<string, string> = {
     PATH: process.env.PATH || '',

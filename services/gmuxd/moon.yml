@@ -5,7 +5,7 @@ tasks:
     script: |
       set -euo pipefail
       ROOT="$MOON_WORKSPACE_ROOT"
-      DEV_BIN_DIR="$ROOT/bin"
+      DEV_BIN_DIR="$ROOT/bin/dev"
 
       # ── Instance identity ──
       # Grove worktrees live at .grove/<name> under the main repo.
@@ -30,7 +30,7 @@ tasks:
       echo "→ Tearing down any previous $INSTANCE_NAME instance..."
 
       if [[ -S "${XDG_STATE_HOME:-$HOME/.local/state}/$INSTANCE_NAME/state/gmux/gmuxd.sock" ]]; then
-        "$DEV_BIN_DIR/gmuxd-dev" stop 2>/dev/null || true
+        "$DEV_BIN_DIR/gmuxd" stop 2>/dev/null || true
       fi
 
       _kill_port() {
@@ -52,7 +52,7 @@ tasks:
       rm -rf "$ROOT/apps/gmux-web/node_modules/.vite"
 
       # ── Prepare directories and config ──
-      mkdir -p "$DEV_SOCKET_DIR" "$DEV_STATE_DIR/config/gmux" "$DEV_STATE_DIR/state" "$DEV_STATE_DIR/pi-agent"
+      mkdir -p "$DEV_SOCKET_DIR" "$DEV_STATE_DIR/config/gmux" "$DEV_STATE_DIR/state" "$DEV_STATE_DIR/pi-agent" "$DEV_BIN_DIR"
 
       # Bootstrap pi model config from the parent PI_CODING_AGENT_DIR so the dev
       # daemon uses the same model/provider settings as the host pi session.
@@ -100,8 +100,8 @@ tasks:
 
       # ── Build ──
       echo "→ Building Go binaries..."
-      (cd "$ROOT/cli/gmux" && go build -o "$DEV_BIN_DIR/gmux-dev" ./cmd/gmux)
-      (cd "$ROOT/services/gmuxd" && go build -o "$DEV_BIN_DIR/gmuxd-dev" ./cmd/gmuxd)
+      (cd "$ROOT/cli/gmux" && go build -o "$DEV_BIN_DIR/gmux" ./cmd/gmux)
+      (cd "$ROOT/services/gmuxd" && go build -o "$DEV_BIN_DIR/gmuxd" ./cmd/gmuxd)
 
       # ── Shared env ──
       export GMUX_SOCKET_DIR="$DEV_SOCKET_DIR"
@@ -133,7 +133,7 @@ tasks:
 
       # ── Start gmuxd ──
       echo "→ Starting gmuxd on port $DEV_PORT..."
-      "$DEV_BIN_DIR/gmuxd-dev" start &
+      "$DEV_BIN_DIR/gmuxd" start &
       PIDS+=($!)
 
       # ── Watch Go files → rebuild + restart gmuxd ──
@@ -148,16 +148,16 @@ tasks:
         --shell bash \
         -- "
           echo '→ Go files changed, rebuilding...'
-          (cd '$ROOT/cli/gmux' && go build -o '$DEV_BIN_DIR/gmux-dev' ./cmd/gmux) &&
-          (cd '$ROOT/services/gmuxd' && go build -o '$DEV_BIN_DIR/gmuxd-dev' ./cmd/gmuxd) &&
-          echo '→ Restarting gmuxd-dev ($INSTANCE_NAME)...' &&
+          (cd '$ROOT/cli/gmux' && go build -o '$DEV_BIN_DIR/gmux' ./cmd/gmux) &&
+          (cd '$ROOT/services/gmuxd' && go build -o '$DEV_BIN_DIR/gmuxd' ./cmd/gmuxd) &&
+          echo '→ Restarting gmuxd ($INSTANCE_NAME)...' &&
           GMUX_SOCKET_DIR=$DEV_SOCKET_DIR \
           GMUX_CONFIG_DIR='$DEV_STATE_DIR/config/gmux' \
           XDG_CONFIG_HOME='$DEV_STATE_DIR/config' \
           XDG_STATE_HOME='$DEV_STATE_DIR/state' \
           GMUXD_DEV_PROXY='http://localhost:$DEV_VITE_PORT' \
           PI_CODING_AGENT_DIR='$DEV_STATE_DIR/pi-agent' \
-          '$DEV_BIN_DIR/gmuxd-dev' start
+          '$DEV_BIN_DIR/gmuxd' start
         " &
       PIDS+=($!)
 
@@ -169,23 +169,31 @@ tasks:
       echo "  Tailscale: https://$DEV_TS_HOSTNAME.<tailnet>"
       echo "  Sockets:   $DEV_SOCKET_DIR"
       echo ""
-      echo "  Launch a session: bin/gmux-dev <cmd>"
+      echo "  Launch a session: bin/dev/gmux <cmd>"
       echo "══════════════════════════════════════════════════════"
 
       wait
     preset: server
 
-  build:
+  build-dev:
+    script: |
+      mkdir -p "$MOON_WORKSPACE_ROOT/bin/dev"
+      go build -o "$MOON_WORKSPACE_ROOT/bin/dev/gmuxd" ./cmd/gmuxd
+    deps:
+      - gmux:build-dev
+
+  build-prod:
     script: |
       BUILD_VERSION="${VERSION:-prod}"
       WEB_EMBED="cmd/gmuxd/web"
+      mkdir -p "$MOON_WORKSPACE_ROOT/bin/prod"
       (cd "$MOON_WORKSPACE_ROOT/apps/gmux-web" && VERSION="$BUILD_VERSION" pnpm exec vite build)
       rm -rf "$WEB_EMBED/assets" "$WEB_EMBED/favicon.svg" "$WEB_EMBED/manifest.json"
       cp -r "$MOON_WORKSPACE_ROOT/apps/gmux-web/dist/"* "$WEB_EMBED/"
-      go build -ldflags "-X main.version=$BUILD_VERSION" -o "$MOON_WORKSPACE_ROOT/bin/gmuxd" ./cmd/gmuxd
+      go build -ldflags "-X main.version=$BUILD_VERSION" -o "$MOON_WORKSPACE_ROOT/bin/prod/gmuxd" ./cmd/gmuxd
     deps:
       - protocol:build
-      - gmux:build
+      - gmux:build-prod
     inputs:
       - "cmd/**/*"
       - "internal/**/*"
@@ -197,8 +205,8 @@ tasks:
       set -euo pipefail
       goos=$(go env GOOS)
       prefix=$(brew --prefix 2>/dev/null || echo /usr/local)
-      cp "$MOON_WORKSPACE_ROOT/bin/gmux"  "$prefix/bin/gmux"
-      cp "$MOON_WORKSPACE_ROOT/bin/gmuxd" "$prefix/bin/gmuxd"
+      cp "$MOON_WORKSPACE_ROOT/bin/prod/gmux"  "$prefix/bin/gmux"
+      cp "$MOON_WORKSPACE_ROOT/bin/prod/gmuxd" "$prefix/bin/gmuxd"
       if command -v codesign >/dev/null 2>&1; then
         codesign --sign - --force "$prefix/bin/gmux"
         codesign --sign - --force "$prefix/bin/gmuxd"
@@ -225,7 +233,7 @@ tasks:
         gmuxd restart
       fi
     deps:
-      - ~:build
+      - ~:build-prod
 
   test:
     command: go test ./...
