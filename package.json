@@ -12,7 +12,7 @@
     "test": "moon run :test",
     "test:e2e": "npx playwright test --config e2e/playwright.config.ts",
     "lint": "biome lint . && moon run :lint",
-    "check": "moon check :build :test",
+    "check": "moon run :build :test",
     "graph": "moon project-graph"
   },
   "pnpm": {
