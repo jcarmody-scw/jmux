@@ -177,12 +177,14 @@ tasks:
 
   build:
     script: |
+      BUILD_VERSION="${VERSION:-prod}"
       WEB_EMBED="cmd/gmuxd/web"
+      (cd "$MOON_WORKSPACE_ROOT/apps/gmux-web" && VERSION="$BUILD_VERSION" pnpm exec vite build)
       rm -rf "$WEB_EMBED/assets" "$WEB_EMBED/favicon.svg" "$WEB_EMBED/manifest.json"
       cp -r "$MOON_WORKSPACE_ROOT/apps/gmux-web/dist/"* "$WEB_EMBED/"
-      go build -o "$MOON_WORKSPACE_ROOT/bin/gmuxd" ./cmd/gmuxd
+      go build -ldflags "-X main.version=$BUILD_VERSION" -o "$MOON_WORKSPACE_ROOT/bin/gmuxd" ./cmd/gmuxd
     deps:
-      - gmux-web:build
+      - protocol:build
       - gmux:build
     inputs:
       - "cmd/**/*"

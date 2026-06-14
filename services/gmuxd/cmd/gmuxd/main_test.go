@@ -25,7 +25,7 @@ func (a discoverTestAdapter) Name() string                      { return a.name 
 func (a discoverTestAdapter) Discover() bool                    { return a.available }
 func (a discoverTestAdapter) Match(_ []string) bool             { return false }
 func (a discoverTestAdapter) Env(_ adapter.EnvContext) []string { return nil }
-func (a discoverTestAdapter) Monitor(_ []byte) *adapter.Event { return nil }
+func (a discoverTestAdapter) Monitor(_ []byte) *adapter.Event   { return nil }
 func (a discoverTestAdapter) Launchers() []adapter.Launcher {
 	return []adapter.Launcher{{ID: a.name, Label: a.name}}
 }
@@ -449,17 +449,17 @@ func startTestSocketDaemonFull(t *testing.T) (stateDir string, cleanup func()) {
 		exitedAt := time.Now().Add(-37 * time.Minute).Format(time.RFC3339)
 		sessions := []map[string]any{
 			{
-				"id":           "sess-aabbccdd",
-				"kind":         "pi",
-				"title":        "Fix scrollback bug",
-				"alive":        true,
-				"pid":          99001,
-				"cwd":          "/home/user/project",
-				"socket_path":  "/tmp/gmux-sessions/sess-aabbccdd.sock",
+				"id":            "sess-aabbccdd",
+				"kind":          "pi",
+				"title":         "Fix scrollback bug",
+				"alive":         true,
+				"pid":           99001,
+				"cwd":           "/home/user/project",
+				"socket_path":   "/tmp/gmux-sessions/sess-aabbccdd.sock",
 				"terminal_cols": 80,
 				"terminal_rows": 24,
-				"status":       map[string]any{"label": "thinking...", "working": true},
-				"started_at":   time.Now().Add(-5 * time.Minute).Format(time.RFC3339),
+				"status":        map[string]any{"label": "thinking...", "working": true},
+				"started_at":    time.Now().Add(-5 * time.Minute).Format(time.RFC3339),
 			},
 			{
 				"id":        "sess-11223344",
@@ -716,6 +716,24 @@ func TestParseGitShortstat(t *testing.T) {
 	}
 }
 
+func TestResolveBuildVersionDevAndProdPrefixes(t *testing.T) {
+	gotDev := resolveBuildVersion("dev", "07db96abcdef", "2026-06-14T07:00:00Z")
+	if gotDev != "dev.0614.07db96" {
+		t.Fatalf("dev version = %q, want dev.0614.07db96", gotDev)
+	}
+
+	gotProd := resolveBuildVersion("prod", "07db96abcdef", "2026-06-14T07:00:00Z")
+	if gotProd != "prod.0614.07db96" {
+		t.Fatalf("prod version = %q, want prod.0614.07db96", gotProd)
+	}
+}
+
+func TestResolveBuildVersionReleasePassthrough(t *testing.T) {
+	got := resolveBuildVersion("1.2.3", "07db96abcdef", "2026-06-14T07:00:00Z")
+	if got != "1.2.3" {
+		t.Fatalf("release version = %q, want 1.2.3", got)
+	}
+}
 func TestBuildTopologyFields(t *testing.T) {
 	topo := buildTopology("127.0.0.1:22226", "/home/agent/.local/state/gmux", "/repos/james-gmux", "")
 
