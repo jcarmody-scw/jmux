@@ -197,6 +197,15 @@ export function inputItemForText(text: string, knownCommands?: ReadonlySet<strin
   return { kind: 'user', text: trimmed }
 }
 
+function firstTextBlock(message: unknown): string {
+  const content = (message as { content?: unknown } | undefined)?.content
+  if (!Array.isArray(content)) return ''
+  const firstText = content.find((block): block is TextContent =>
+    typeof block === 'object' && block !== null && (block as { type?: unknown }).type === 'text',
+  )
+  return firstText?.text?.trim() ?? ''
+}
+
 /** Extract command names from a pi-rpc get_commands response. */
 export function extractCommandNames(ev: Record<string, unknown>): string[] | null {
   if (ev.type !== 'response' || ev.command !== 'get_commands' || ev.success !== true) return null
@@ -416,6 +425,25 @@ function commandOutputFromNotify(ev: Record<string, unknown>): CommandOutputItem
 /** Apply one SDK event to the items array, returning the new array. */
 export function reduceItems(items: RenderItem[], ev: Record<string, unknown>): RenderItem[] {
   switch (ev.type) {
+    case 'history_reset': {
+      return []
+    }
+    case 'history_message': {
+      const message = ev.message as { role?: string } | undefined
+      if (message?.role === 'user') {
+        const text = firstTextBlock(message)
+        return text ? [...items, inputItemForText(text)] : items
+      }
+      if (message?.role === 'assistant') {
+        return [...items, {
+          kind: 'assistant',
+          blocks: extractBlocks(message),
+          toolExecMap: {},
+          complete: true,
+        }]
+      }
+      return items
+    }
     case 'session_ready': {
       return [...items, { kind: 'system', subtype: 'ready', text: getSystemText(ev) }]
     }

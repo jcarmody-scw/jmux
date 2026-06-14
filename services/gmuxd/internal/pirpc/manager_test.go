@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -50,7 +51,21 @@ func TestHelperProcess(t *testing.T) {
 				continue
 			}
 			if cmd["type"] == "get_state" {
-				fmt.Println(`{"type":"response","command":"get_state","success":true,"data":{"model":{"id":"test-model"},"sessionFile":"/tmp/test.jsonl","sessionId":"abc"}}`)
+				sessionFile := os.Getenv("TEST_PI_SESSION_FILE")
+				if sessionFile == "" {
+					sessionFile = "/tmp/test.jsonl"
+				}
+				resp, _ := json.Marshal(map[string]interface{}{
+					"type":    "response",
+					"command": "get_state",
+					"success": true,
+					"data": map[string]interface{}{
+						"model":       map[string]string{"id": "test-model"},
+						"sessionFile": sessionFile,
+						"sessionId":   "abc",
+					},
+				})
+				fmt.Println(string(resp))
 			} else if cmd["type"] == "get_commands" {
 				fmt.Println(`{"id":"commands-1","type":"response","command":"get_commands","success":true,"data":{"commands":[{"name":"auth-refresh","description":"Refresh auth","source":"extension"}]}}`)
 			} else {
@@ -510,4 +525,81 @@ func TestLaunchProvidesPiRPCEnvironmentFallbacks(t *testing.T) {
 	if proc.cmd.ProcessState == nil || proc.cmd.ProcessState.ExitCode() != 0 {
 		t.Fatalf("env helper exited with state %v", proc.cmd.ProcessState)
 	}
+}
+
+func TestHandleWebSocketReplaysPiJSONLHistoryOnConnect(t *testing.T) {
+	sessionFile := filepath.Join(t.TempDir(), "session.jsonl")
+	body := strings.Join([]string{
+		`{"type":"session","version":3,"id":"pi-session","timestamp":"2026-06-14T00:00:00Z","cwd":"/tmp"}`,
+		`{"type":"model_change","id":"m1","timestamp":"2026-06-14T00:00:01Z","provider":"test","modelId":"test-model"}`,
+		`{"type":"message","id":"u1","timestamp":"2026-06-14T00:00:02Z","message":{"role":"user","content":[{"type":"text","text":"replay probe"}]}}`,
+		`{"type":"message","id":"a1","timestamp":"2026-06-14T00:00:03Z","message":{"role":"assistant","content":[{"type":"text","text":"replayed response"}]}}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(sessionFile, []byte(body), 0o600); err != nil {
+		t.Fatalf("write session jsonl: %v", err)
+	}
+	t.Setenv("TEST_PI_SESSION_FILE", sessionFile)
+
+	s := newTestStore("sess-history")
+	m := New(s)
+	launchHelper(t, m, "sess-history", "rpc-sim")
+
+	waitFor(t, 5*time.Second, "subtitle set", func() bool {
+		sess, _ := s.Get("sess-history")
+		return sess.Subtitle == "test-model"
+	})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		m.HandleWebSocket(w, r, "sess-history")
+	}))
+	defer srv.Close()
+
+	ctx := context.Background()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/"
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	sawUser := false
+	sawAssistant := false
+	deadline := time.After(5 * time.Second)
+	for !sawUser || !sawAssistant {
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for history replay user=%v assistant=%v", sawUser, sawAssistant)
+		default:
+		}
+		rctx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+		_, data, err := conn.Read(rctx)
+		cancel()
+		if err != nil {
+			continue
+		}
+		var got struct {
+			Type    string `json:"type"`
+			Message struct {
+				Role    string `json:"role"`
+				Content []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"message"`
+		}
+		if err := json.Unmarshal(data, &got); err != nil {
+			t.Fatalf("parse replay event %q: %v", data, err)
+		}
+		if got.Type == "history_message" && got.Message.Role == "user" && len(got.Message.Content) == 1 && got.Message.Content[0].Text == "replay probe" {
+			sawUser = true
+		}
+		if got.Type == "history_message" && got.Message.Role == "assistant" && len(got.Message.Content) == 1 && got.Message.Content[0].Text == "replayed response" {
+			sawAssistant = true
+		}
+	}
+
+	m.mu.Lock()
+	proc := m.sessions["sess-history"]
+	m.mu.Unlock()
+	proc.stdin.Close()
 }
