@@ -3263,20 +3263,100 @@ a.home-host-link:hover {
 }
 
 .pi-session-item-command {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
   color: var(--text-muted);
   font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
-  background: rgba(79, 142, 247, 0.08);
-  border-left: 2px solid var(--accent);
+  background: color-mix(in oklch, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in oklch, var(--accent) 24%, transparent);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
 }
 
 .pi-session-command-label {
   color: var(--accent);
-  font-weight: 600;
-  margin-right: 8px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
 }
 
-.pi-session-command-text {
+.pi-session-command-args {
+  min-width: 0;
   color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pi-session-command-status {
+  justify-self: end;
+  padding: 1px 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: rgba(0, 0, 0, 0.16);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.pi-session-item-command-accepted .pi-session-command-status,
+.pi-session-item-command-handled .pi-session-command-status {
+  color: var(--status-connected);
+  border-color: color-mix(in oklch, var(--status-connected) 40%, transparent);
+}
+
+.pi-session-item-command-unknown {
+  border-color: color-mix(in oklch, oklch(78% 0.12 75) 42%, transparent);
+  border-left-color: oklch(78% 0.12 75);
+  background: color-mix(in oklch, oklch(78% 0.12 75) 11%, transparent);
+}
+
+.pi-session-item-command-unknown .pi-session-command-status {
+  color: oklch(78% 0.12 75);
+  border-color: color-mix(in oklch, oklch(78% 0.12 75) 40%, transparent);
+}
+
+.pi-session-item-command-error {
+  border-color: color-mix(in oklch, var(--status-error) 42%, transparent);
+  border-left-color: var(--status-error);
+  background: color-mix(in oklch, var(--status-error) 10%, transparent);
+}
+
+.pi-session-item-command-error .pi-session-command-status {
+  color: var(--status-error);
+  border-color: color-mix(in oklch, var(--status-error) 40%, transparent);
+}
+
+.pi-session-command-output {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  margin: -2px 0 4px 16px;
+  padding: 6px 10px;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: 7px;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12.5px;
+}
+
+.pi-session-command-output-prefix {
+  color: var(--text-dim);
+  user-select: none;
+}
+
+.pi-session-command-output-warning {
+  color: oklch(78% 0.12 75);
+  border-color: color-mix(in oklch, oklch(78% 0.12 75) 35%, transparent);
+}
+
+.pi-session-command-output-error {
+  color: var(--status-error);
+  border-color: color-mix(in oklch, var(--status-error) 35%, transparent);
 }
 
 /* Assistant text */

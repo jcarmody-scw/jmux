@@ -53,10 +53,21 @@ interface UserItem {
   text: string
 }
 
+export type CommandStatus = 'pending' | 'accepted' | 'handled' | 'error' | 'unknown'
+
 export interface CommandItem {
   kind: 'command'
   text: string
   label: string
+  args: string
+  status: CommandStatus
+  statusText: string
+}
+
+export interface CommandOutputItem {
+  kind: 'command-output'
+  subtype: 'info' | 'warning' | 'error'
+  text: string
 }
 
 export interface AssistantItem {
@@ -74,7 +85,7 @@ interface SystemItem {
   text: string
 }
 
-export type RenderItem = UserItem | CommandItem | AssistantItem | SystemItem
+export type RenderItem = UserItem | CommandItem | CommandOutputItem | AssistantItem | SystemItem
 
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for tests)
@@ -126,13 +137,49 @@ export function slashCommandLabel(text: string): string {
   return /^\/\S+/.test(token) && token !== '/' ? token : '/command'
 }
 
+/** Return the arguments after the slash command token, for example sonnet from /model sonnet. */
+export function slashCommandArgs(text: string): string {
+  const trimmed = text.trimStart()
+  const label = slashCommandLabel(trimmed)
+  if (label === '/command') return ''
+  return trimmed.slice(label.length).trimStart()
+}
+
+function commandNameFromLabel(label: string): string {
+  return label.startsWith('/') ? label.slice(1) : label
+}
+
+function commandStatusForLabel(label: string, knownCommands?: ReadonlySet<string>): Pick<CommandItem, 'status' | 'statusText'> {
+  if (knownCommands && !knownCommands.has(commandNameFromLabel(label))) {
+    return { status: 'unknown', statusText: 'unknown command' }
+  }
+  return { status: 'pending', statusText: 'running' }
+}
+
 /** Create the local render item shown after user input is sent. */
-export function inputItemForText(text: string): UserItem | CommandItem {
+export function inputItemForText(text: string, knownCommands?: ReadonlySet<string>): UserItem | CommandItem {
   const trimmed = text.trim()
   if (isSlashCommand(trimmed)) {
-    return { kind: 'command', text: trimmed, label: slashCommandLabel(trimmed) }
+    const label = slashCommandLabel(trimmed)
+    return {
+      kind: 'command',
+      text: trimmed,
+      label,
+      args: slashCommandArgs(trimmed),
+      ...commandStatusForLabel(label, knownCommands),
+    }
   }
   return { kind: 'user', text: trimmed }
+}
+
+/** Extract command names from a pi-rpc get_commands response. */
+export function extractCommandNames(ev: Record<string, unknown>): string[] | null {
+  if (ev.type !== 'response' || ev.command !== 'get_commands' || ev.success !== true) return null
+  const data = ev.data as { commands?: Array<{ name?: unknown }> } | undefined
+  if (!Array.isArray(data?.commands)) return []
+  return data.commands
+    .map(command => command.name)
+    .filter((name): name is string => typeof name === 'string' && name.length > 0)
 }
 
 // ---------------------------------------------------------------------------
@@ -246,6 +293,33 @@ function updateLastAssistantToolExec(
   return prev
 }
 
+function updateLastCommandItem(
+  prev: RenderItem[],
+  update: (item: CommandItem) => CommandItem,
+  options: { includeUnknown?: boolean } = {},
+): RenderItem[] {
+  const next = [...prev]
+  for (let i = next.length - 1; i >= 0; i--) {
+    const item = next[i]
+    if (item.kind === 'command') {
+      const cur = item as CommandItem
+      if (cur.status === 'unknown' && !options.includeUnknown) return prev
+      next[i] = update(cur)
+      return next
+    }
+    if (item.kind !== 'command-output') return prev
+  }
+  return prev
+}
+
+function commandOutputFromNotify(ev: Record<string, unknown>): CommandOutputItem | null {
+  if (ev.type !== 'extension_ui_request' || ev.method !== 'notify') return null
+  const notifyType = ev.notifyType === 'warning' || ev.notifyType === 'error' ? ev.notifyType : 'info'
+  const message = String(ev.message ?? '')
+  if (!message) return null
+  return { kind: 'command-output', subtype: notifyType, text: message }
+}
+
 // ---------------------------------------------------------------------------
 // Pure items reducer (exported for tests)
 // ---------------------------------------------------------------------------
@@ -332,6 +406,25 @@ export function reduceItems(items: RenderItem[], ev: Record<string, unknown>): R
         done: true,
         isError: Boolean(ev.isError),
       }))
+    }
+    case 'response': {
+      if (ev.command !== 'prompt') return items
+      const success = ev.success === true
+      return updateLastCommandItem(items, item => ({
+        ...item,
+        status: success ? 'accepted' : 'error',
+        statusText: success ? 'accepted' : String(ev.error ?? 'command failed'),
+      }), { includeUnknown: !success })
+    }
+    case 'extension_ui_request': {
+      const output = commandOutputFromNotify(ev)
+      if (!output) return items
+      const withHandledCommand = updateLastCommandItem(items, item => ({
+        ...item,
+        status: item.status === 'error' || item.status === 'unknown' ? item.status : 'handled',
+        statusText: item.status === 'error' || item.status === 'unknown' ? item.statusText : 'output',
+      }), { includeUnknown: true })
+      return [...withHandledCommand, output]
     }
     // agent_end, queue_update, session_info_changed, thinking_level_changed, turn_end,
     // message_start: no items change
@@ -509,9 +602,18 @@ function RenderItemView({ item, isSticky, expandAllThinking }: { item: RenderIte
   }
   if (item.kind === 'command') {
     return (
-      <div class="pi-session-item pi-session-item-command">
+      <div class={`pi-session-item pi-session-item-command pi-session-item-command-${item.status}`}>
         <span class="pi-session-command-label">{item.label}</span>
-        <span class="pi-session-command-text">{item.text}</span>
+        {item.args && <span class="pi-session-command-args">{item.args}</span>}
+        <span class="pi-session-command-status">{item.statusText}</span>
+      </div>
+    )
+  }
+  if (item.kind === 'command-output') {
+    return (
+      <div class={`pi-session-item pi-session-command-output pi-session-command-output-${item.subtype}`}>
+        <span class="pi-session-command-output-prefix">↳</span>
+        <span class="pi-session-command-output-text">{item.text}</span>
       </div>
     )
   }
@@ -579,16 +681,17 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
   const [inputText, setInputText] = useState('')
   const [sessionInfo, setSessionInfo] = useState<{ model: string; thinkingLevel: string } | null>(null)
   const [expandAllThinking, setExpandAllThinking] = useState(false)
+  const [commandNames, setCommandNames] = useState<Set<string> | null>(null)
 
   const wsRef = useRef<WebSocket | null>(null)
   const retryCountRef = useRef(0)
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const messagesRef = useRef<HTMLDivElement>(null)
 
-  // Derive: index of the last user item — sticky while streaming.
-  // This is the prompt that triggered the active agent run.
+  // Derive: index of the last user or command item — sticky while streaming.
+  // This is the prompt or command that triggered the active agent run.
   const lastUserIndex: number = streaming
-    ? items.reduce((idx: number, item, i) => (item.kind === 'user' ? i : idx), -1)
+    ? items.reduce((idx: number, item, i) => (item.kind === 'user' || item.kind === 'command' ? i : idx), -1)
     : -1
 
   // Conditional auto-scroll: only scroll to bottom when already near the bottom.
@@ -605,9 +708,11 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
   // Stable event dispatcher — uses reduceItems for all items changes
   // Stable event dispatcher — uses reduceItems for all items changes
   const dispatchEvent = useCallback((ev: Record<string, unknown>) => {
-    // Capture session info from session_ready before reducer
+    // Capture session info and command registry before reducer
     const info = parseSessionInfo(ev)
     if (info) setSessionInfo(info)
+    const names = extractCommandNames(ev)
+    if (names) setCommandNames(new Set(names))
 
     // Items update via pure reducer
     setItems(prev => reduceItems(prev, ev))
@@ -645,6 +750,7 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
     ws.onopen = () => {
       retryCountRef.current = 0
       setWsState('open')
+      ws.send(JSON.stringify({ id: 'gmux-web-get-commands', type: 'get_commands' }))
     }
 
     ws.onmessage = (ev) => {
@@ -693,9 +799,9 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
     const ws = wsRef.current
     if (!ws || ws.readyState !== WebSocket.OPEN) return
     ws.send(JSON.stringify({ type: 'prompt', text: trimmed }))
-    setItems(prev => [...prev, inputItemForText(trimmed)])
+    setItems(prev => [...prev, inputItemForText(trimmed, commandNames ?? undefined)])
     setInputText('')
-  }, [])
+  }, [commandNames])
 
   const sendAbort = useCallback(() => {
     const ws = wsRef.current
