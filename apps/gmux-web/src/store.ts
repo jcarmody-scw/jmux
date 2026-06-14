@@ -279,9 +279,9 @@ function publishActivity() {
  * `_rafPending` and timer maps are clean between test cases.
  */
 export function _resetActivityStateForTest(): void {
-  _actTimers.forEach(t => clearTimeout(t))
+  _actTimers.forEach(t => { clearTimeout(t) })
   _actTimers.clear()
-  _fadeTimers.forEach(t => clearTimeout(t))
+  _fadeTimers.forEach(t => { clearTimeout(t) })
   _fadeTimers.clear()
   _actMap.clear()
   _rafPending = false
@@ -985,5 +985,5 @@ export function initStore(): () => void {
   })
   cleanups.push(disposeMdSync)
 
-  return () => cleanups.forEach(fn => fn())
+  return () => { cleanups.forEach(fn => { fn() }) }
 }

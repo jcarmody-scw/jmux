@@ -303,7 +303,7 @@ export function formatPasteText(text: string, bracketedPasteMode: boolean): stri
     // Normalize to \r inside brackets (standard terminal paste convention).
     const normalized = text.replace(/\r?\n/g, '\r')
     // Sanitize ESC so nothing inside the text can break out of the bracket.
-    const sanitized = normalized.replace(/\x1b/g, '\u241b')
+    const sanitized = normalized.split(String.fromCharCode(27)).join('\u241b')
     return `\x1b[200~${sanitized}\x1b[201~`
   }
 

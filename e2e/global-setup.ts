@@ -63,14 +63,14 @@ async function waitForSession(port: number, token: string, expectCwd: string, ti
 }
 
 export default async function globalSetup(_config: FullConfig) {
-  // Build frontend + Go binaries so the embedded assets are always in sync
-  // with the current source.  Runs unconditionally — both Vite and `go build`
-  // are incremental, so a no-op rebuild finishes in seconds.
+  // Build frontend + Go binaries through the same Moon-backed entrypoint
+  // used by the repo's npm scripts. Runs unconditionally because Vite,
+  // Moon, and `go build` are incremental, so a no-op rebuild finishes quickly.
   //
-  // Set E2E_SKIP_BUILD=1 to skip (e.g. in CI where builds are a separate job).
+  // Set E2E_SKIP_BUILD=1 to skip, for example in CI where builds are a separate job.
   if (!process.env.E2E_SKIP_BUILD) {
-    console.log('\n[e2e] building gmux (E2E_SKIP_BUILD=1 to skip)…')
-    execSync('./scripts/build.sh', { cwd: ROOT, stdio: 'inherit' })
+    console.log('\n[e2e] building gmux via npm run build (E2E_SKIP_BUILD=1 to skip)…')
+    execSync('npm run build', { cwd: ROOT, stdio: 'inherit' })
   }
 
   const port = await freePort()

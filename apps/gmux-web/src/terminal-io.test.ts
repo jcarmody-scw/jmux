@@ -54,7 +54,7 @@ describe('createTerminalIO', () => {
     io.reset(1)
     io.writeMany([enc('x'), enc('y')], 1, done)
     expect(done).not.toHaveBeenCalled()
-    rafCallbacks.forEach(cb => cb(0))
+    rafCallbacks.forEach(cb => { cb(0) })
     expect(done).toHaveBeenCalledTimes(1)
 
     vi.unstubAllGlobals()

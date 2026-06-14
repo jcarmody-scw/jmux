@@ -77,8 +77,6 @@ body {
 
 .app-layout {
   display: flex;
-  height: 100vh;
-  height: 100dvh;
   height: var(--app-height, 100dvh);
   width: 100%;
 }
@@ -786,7 +784,6 @@ body {
 .modal-panel {
   width: 440px;
   max-width: calc(100vw - 32px);
-  max-height: calc(100vh - 64px);
   max-height: calc(var(--app-height, 100vh) - 64px);
   display: flex;
   flex-direction: column;

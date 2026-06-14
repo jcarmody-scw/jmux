@@ -1,27 +1,11 @@
 import { test, expect } from '@playwright/test'
+import type { Page } from '@playwright/test'
 import { openApp, gotoTestSession, spawnTestSession } from '../helpers'
 
 /**
  * Scroll position helpers using wterm's DOM-based scrolling.
- * wterm renders text into real DOM nodes — scroll state lives on term.element.
+ * wterm renders text into real DOM nodes, so scroll state lives on term.element.
  */
-
-async function getScrollState(page: Parameters<typeof page.evaluate>[1] extends infer T ? never : Page) {
-  return (page as any).evaluate(() => {
-    const term = (window as any).__gmuxTerm
-    if (!term) return null
-    const el = term.element as HTMLElement
-    return {
-      scrollTop: el.scrollTop,
-      scrollHeight: el.scrollHeight,
-      clientHeight: el.clientHeight,
-      atBottom: el.scrollHeight - el.scrollTop - el.clientHeight < 5,
-      scrollbackCount: term.bridge?.getScrollbackCount?.() ?? 0,
-    }
-  })
-}
-
-import type { Page } from '@playwright/test'
 
 async function termScrollState(page: Page) {
   return page.evaluate(() => {

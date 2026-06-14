@@ -35,11 +35,27 @@ export type { DotState }
 
 /**
  * Returns the environment icon for a session:
+ *   ⚡  for pi-rpc sessions
+ *   🏖️⚡ for sandboxed pi-rpc sessions
  *   🏖️  for sandbox sessions (pi-sbx adapter)
- *   🏡  for all host sessions
+ *   🏡  for all other host sessions
  */
 export function sessionEnvironmentIcon(kind: string): string {
-  return kind === 'pi-sbx' ? '🏖️' : '🏡'
+  if (kind === 'pi-rpc') return '⚡'
+  if (kind === 'pi-rpc-sbx') return '🏖️⚡'
+  if (kind === 'pi-sbx') return '🏖️'
+  return '🏡'
+}
+
+export function sessionEnvironmentLabel(kind: string): string {
+  if (kind === 'pi-rpc') return 'pi rpc'
+  if (kind === 'pi-rpc-sbx') return 'sandbox pi rpc'
+  if (kind === 'pi-sbx') return 'sandbox'
+  return 'host'
+}
+
+export function sidebarVisibleSessions(sessions: Session[]): Session[] {
+  return sessions.filter(s => s.alive)
 }
 
 /** Determine the dot indicator state for a session. */
@@ -152,7 +168,7 @@ function SessionItem({
           ? <svg class="session-sleep-icon" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><title>Resumable</title><path d="M7 1h4l-4 4h4" /><path d="M1 5h5l-5 6h5" /></svg>
           : <span class={`session-dot-indicator ${dotState}${arrival ? ` ${arrival}` : ''}`} />
         }
-        <span class="session-env-icon" aria-label={session.kind === 'pi-sbx' ? 'sandbox' : 'host'}>{sessionEnvironmentIcon(session.kind)}</span>
+        <span class="session-env-icon" aria-label={sessionEnvironmentLabel(session.kind)}>{sessionEnvironmentIcon(session.kind)}</span>
         <span class="session-tab-title">{session.title}</span>
         {onClose && (
           <button
@@ -192,7 +208,7 @@ function SessionItem({
       {session.peer && <PeerLabel name={session.peer} />}
       <div class="session-content">
         <div class="session-title-row">
-          <span class="session-env-icon" aria-label={session.kind === 'pi-sbx' ? 'sandbox' : 'host'}>{sessionEnvironmentIcon(session.kind)}</span>
+          <span class="session-env-icon" aria-label={sessionEnvironmentLabel(session.kind)}>{sessionEnvironmentIcon(session.kind)}</span>
           <span class="session-title">{session.title}</span>
         </div>
         {session.status?.label && (
@@ -320,7 +336,7 @@ function FolderGroup({
     setDrag(null)
   }, [drag, project])
 
-  const visible = folder.sessions.filter(s => s.alive || s.resumable)
+  const visible = sidebarVisibleSessions(folder.sessions)
   const displayItems = drag ? reorder(visible, drag.from, drag.over) : visible
   const isCurrent = curProjectSlug === folder.path
   return (
@@ -462,7 +478,7 @@ export function Sidebar({
     : null
 
   const totalVisible = foldersVal.reduce(
-    (n, f) => n + f.sessions.filter(s => s.alive || s.resumable).length, 0,
+    (n, f) => n + sidebarVisibleSessions(f.sessions).length, 0,
   )
   const connected = connState.value === 'connected'
   const { trigger: triggerInstall } = useInstallPrompt()

@@ -103,7 +103,7 @@ export function getExpandedPaths(
 ): string[] {
   return dirPaths.filter(p => {
     const item = model.getItem(p)
-    return item !== null && item.isDirectory() && (item as import('@pierre/trees').FileTreeDirectoryHandle).isExpanded()
+    return item?.isDirectory() === true && (item as import('@pierre/trees').FileTreeDirectoryHandle).isExpanded()
   })
 }
 
@@ -365,7 +365,7 @@ export function FileTree({ projectSlug, cwd }: FileTreeProps) {
             seen.add(p)
             return true
           })
-          additions.forEach(p => knownPaths.add(p))
+          additions.forEach(p => { knownPaths.add(p) })
           if (additions.length > 0) {
             modelRef.current?.batch(additions.map(p => ({ type: 'add' as const, path: p })))
           }
