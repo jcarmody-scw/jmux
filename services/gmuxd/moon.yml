@@ -121,8 +121,12 @@ tasks:
 
       # ── Build ──
       echo "→ Building Go binaries..."
-      (cd "$ROOT/cli/gmux" && go build -o "$DEV_BIN_DIR/gmux" ./cmd/gmux)
-      (cd "$ROOT/services/gmuxd" && go build -o "$DEV_BIN_DIR/gmuxd" ./cmd/gmuxd)
+      GMUX_GIT_DIR="$(git -C "$ROOT" rev-parse --git-dir)"
+      GMUX_GIT_WORK_TREE="$(git -C "$ROOT" rev-parse --show-toplevel)"
+      echo "→ Build git dir: $GMUX_GIT_DIR"
+      echo "→ Build git worktree: $GMUX_GIT_WORK_TREE"
+      (cd "$ROOT/cli/gmux" && GIT_DIR="$GMUX_GIT_DIR" GIT_WORK_TREE="$GMUX_GIT_WORK_TREE" go build -o "$DEV_BIN_DIR/gmux" ./cmd/gmux)
+      (cd "$ROOT/services/gmuxd" && GIT_DIR="$GMUX_GIT_DIR" GIT_WORK_TREE="$GMUX_GIT_WORK_TREE" go build -o "$DEV_BIN_DIR/gmuxd" ./cmd/gmuxd)
 
       # ── Shared env ──
       export GMUX_SOCKET_DIR="$DEV_SOCKET_DIR"
@@ -169,8 +173,10 @@ tasks:
         --shell bash \
         -- "
           echo '→ Go files changed, rebuilding...'
-          (cd '$ROOT/cli/gmux' && go build -o '$DEV_BIN_DIR/gmux' ./cmd/gmux) &&
-          (cd '$ROOT/services/gmuxd' && go build -o '$DEV_BIN_DIR/gmuxd' ./cmd/gmuxd) &&
+          echo "→ Build git dir: $GMUX_GIT_DIR"
+          echo "→ Build git worktree: $GMUX_GIT_WORK_TREE"
+          (cd '$ROOT/cli/gmux' && GIT_DIR=\"$GMUX_GIT_DIR\" GIT_WORK_TREE=\"$GMUX_GIT_WORK_TREE\" go build -o '$DEV_BIN_DIR/gmux' ./cmd/gmux) &&
+          (cd '$ROOT/services/gmuxd' && GIT_DIR=\"$GMUX_GIT_DIR\" GIT_WORK_TREE=\"$GMUX_GIT_WORK_TREE\" go build -o '$DEV_BIN_DIR/gmuxd' ./cmd/gmuxd) &&
           echo '→ Restarting gmuxd ($INSTANCE_NAME)...' &&
           GMUX_SOCKET_DIR=$DEV_SOCKET_DIR \
           GMUX_CONFIG_DIR='$DEV_STATE_DIR/config/gmux' \

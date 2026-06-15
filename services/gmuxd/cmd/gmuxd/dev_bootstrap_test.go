@@ -26,3 +26,31 @@ func TestDevTaskBootstrapsFullPiConfig(t *testing.T) {
 		t.Fatal("dev task must copy workspace .pi/extensions into the dev pi-agent extensions dir")
 	}
 }
+
+func TestDevTaskBuildsWithWorktreeGitStamping(t *testing.T) {
+	data, err := os.ReadFile("../../moon.yml")
+	if err != nil {
+		t.Fatalf("read moon.yml: %v", err)
+	}
+	script := string(data)
+
+	if !strings.Contains(script, `GMUX_GIT_DIR="$(git -C "$ROOT" rev-parse --git-dir)"`) {
+		t.Fatal("dev task must resolve the gmux worktree git dir before building")
+	}
+	if !strings.Contains(script, `GMUX_GIT_WORK_TREE="$(git -C "$ROOT" rev-parse --show-toplevel)"`) {
+		t.Fatal("dev task must resolve the gmux worktree root before building")
+	}
+
+	if strings.Count(script, `GIT_DIR="$GMUX_GIT_DIR"`) < 2 {
+		t.Fatal("dev task must pass GIT_DIR to both initial Go builds")
+	}
+	if strings.Count(script, `GIT_WORK_TREE="$GMUX_GIT_WORK_TREE"`) < 2 {
+		t.Fatal("dev task must pass GIT_WORK_TREE to both initial Go builds")
+	}
+	if strings.Count(script, `GIT_DIR=\"$GMUX_GIT_DIR\"`) < 2 {
+		t.Fatal("dev task must pass GIT_DIR to both watcher Go builds")
+	}
+	if strings.Count(script, `GIT_WORK_TREE=\"$GMUX_GIT_WORK_TREE\"`) < 2 {
+		t.Fatal("dev task must pass GIT_WORK_TREE to both watcher Go builds")
+	}
+}
