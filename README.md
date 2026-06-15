@@ -1,5 +1,7 @@
 # gmux
 
+Repository note: this repository tracks local development in [`jcarmody-scw/jmux`](https://github.com/jcarmody-scw/jmux). The original upstream project is [`gmuxapp/gmux`](https://github.com/gmuxapp/gmux).
+
 **Keep tabs on every AI agent, test runner, and long-running process across your machines. Work from your desktop, steer from your phone.**
 
 Launch any command as a managed session. gmux gives you a live, interactive terminal for each one — grouped by project, with real-time status updates pushed to your browser. When an agent needs input, you'll know. When tests fail, you'll see it. Switch to your phone and the same view is there, ready for you to course-correct.
