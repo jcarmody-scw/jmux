@@ -185,3 +185,23 @@ describe('reduceItems — message_end role guard', () => {
     expect(assistantItem.complete).toBe(true)
   })
 })
+
+describe('reduceItems — pi JSONL history replay', () => {
+  it('renders replayed user and assistant messages from history_message events', () => {
+    let items = reduceItems([], {
+      type: 'history_message',
+      message: { role: 'user', content: [{ type: 'text', text: 'replay probe' }] },
+    })
+    items = reduceItems(items, {
+      type: 'history_message',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'replayed response' }] },
+    })
+
+    expect(items[0]).toEqual({ kind: 'user', text: 'replay probe' })
+    expect(items[1]).toMatchObject({
+      kind: 'assistant',
+      blocks: [{ type: 'text', text: 'replayed response' }],
+      complete: true,
+    })
+  })
+})

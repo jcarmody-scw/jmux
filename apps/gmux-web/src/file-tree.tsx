@@ -16,7 +16,6 @@
 import { useState, useCallback, useRef, useEffect } from 'preact/hooks'
 import { useFileTree, FileTree as PierreFileTree } from '@pierre/trees/react'
 import type {
-  GitStatusEntry,
   ContextMenuItem as FileTreeContextMenuItem,
   ContextMenuOpenContext as FileTreeContextMenuOpenContext,
   FileTreeDropResult,
@@ -32,6 +31,7 @@ import {
 } from './store'
 import type { Session } from './types'
 import { GitStatus } from './git-status'
+import { applyFileTreeStreamMessage, buildFileTreeStreamURL, type FileTreeStreamMessage } from './file-tree-stream'
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -162,22 +162,6 @@ async function apiWalkPaths(slug: string, includeHidden: boolean): Promise<strin
   return resp.data as string[]
 }
 
-type WalkDelta =
-  | { reset: true }
-  | { wait: true }
-  | { added: string[]; removed: string[]; version: number }
-
-async function apiWalkDelta(slug: string, version: number): Promise<WalkDelta> {
-  const resp = await apiFetch('GET', `/v1/fs/${encodeURIComponent(slug)}/walk?since=${version}`)
-  if (!resp.ok) return { reset: true }
-  return resp.data as WalkDelta
-}
-
-async function apiGitFiles(slug: string): Promise<GitStatusEntry[]> {
-  const resp = await apiFetch('GET', `/v1/git/${encodeURIComponent(slug)}/files`)
-  if (!resp.ok) return []
-  return resp.data as GitStatusEntry[]
-}
 
 async function apiMkdir(slug: string, path: string): Promise<void> {
   const resp = await apiFetch('POST', `/v1/fs/${encodeURIComponent(slug)}/mkdir`, { path })
@@ -344,8 +328,8 @@ export function FileTree({ projectSlug, cwd }: FileTreeProps) {
 
       // Phase 2: spawn a Worker to stream the full walk without blocking the
       // main thread. Worker posts batches; we batch-add new paths as they
-      // arrive. On 'done', we record the server version for delta polling.
-      // Terminate any previous Worker so we don't have two racing.
+      // arrive. On 'done', the websocket stream's hello/delta messages keep
+      // the snapshot version current for future push updates.
       walkWorkerRef.current?.terminate()
       walkVersionRef.current = null
       const worker = new Worker(new URL('./walk-worker.ts', import.meta.url), { type: 'module' })
@@ -386,24 +370,12 @@ export function FileTree({ projectSlug, cwd }: FileTreeProps) {
     }
   }, [])
 
-  const refreshGitStatus = useCallback(async () => {
-    const model = modelRef.current
-    if (!model) return
-    try {
-      const entries = await apiGitFiles(projectSlugRef.current)
-      model.setGitStatus(entries)
-    } catch {
-      // git status errors are non-fatal — keep last known state
-    }
-  }, [])
 
   // Stable refs for event callbacks passed to useFileTree (called by the
   // library; need to see the latest loadPaths / showError without
   // re-creating the model).
-  const loadPathsRef   = useRef(loadPaths)
-  const refreshGitStatusRef = useRef(refreshGitStatus)
+  const loadPathsRef = useRef(loadPaths)
   useEffect(() => { loadPathsRef.current = loadPaths }, [loadPaths])
-  useEffect(() => { refreshGitStatusRef.current = refreshGitStatus }, [refreshGitStatus])
 
   // ── Build the @pierre/trees model via hook ──
   // Options are stable wrappers that call the latest ref — model is created
@@ -490,61 +462,67 @@ export function FileTree({ projectSlug, cwd }: FileTreeProps) {
   // Keep modelRef in sync (model is stable but this is defensive).
   modelRef.current = model
 
-  // ── Initial load + projectSlug change: reset paths when slug changes ──
+  // ── Initial load + projectSlug/showHidden change: reset paths when scope changes ──
   useEffect(() => {
     void loadPaths()
-    void refreshGitStatus()  // one-shot initial fetch before first push event
-  }, [projectSlug, loadPaths, refreshGitStatus])
+  }, [projectSlug, showHidden, loadPaths])
 
-  // Re-filter paths when showHidden toggles.
+  // WebSocket: push-based file-tree deltas and git status for this project.
   useEffect(() => {
-    void loadPaths()
-  }, [showHidden, loadPaths])
+    let socket: WebSocket | null = null
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
+    let stopped = false
 
-  // Subscribe to push-based git status events from the SSE signal.
-  // This replaces the polling call; the model.setGitStatus() call here
-  // runs whenever the server broadcasts a git-status event for this project.
-  useEffect(() => {
-    const unsub = gitStatusBySlug.subscribe(map => {
-      const payload = map.get(projectSlug)
-      if (!payload?.entries || !modelRef.current) return
-      modelRef.current.setGitStatus(payload.entries as import('@pierre/trees').GitStatusEntry[])
-    })
-    return unsub
-  }, [projectSlug])
-
-  // Poll: delta file-tree update every 2.5 s.
-  // File-tree uses walk?since=<version> for cheap incremental updates.
-  // The file-tree delta poll is skipped until the Worker completes (version known).
-  // Git status is no longer polled here — it is pushed via SSE events.
-  useEffect(() => {
-    const id = setInterval(async () => {
-      const v = walkVersionRef.current
-      if (v === null) return // Worker still streaming; skip
-      const model = modelRef.current
-      if (!model) return
-      try {
-        const delta = await apiWalkDelta(projectSlugRef.current, v)
-        if ('reset' in delta) {
-          // Too far behind or first sync — do a full reload.
-          void loadPathsRef.current()
-        } else if ('wait' in delta) {
-          // Snapshot not ready yet; try again next tick.
-        } else {
-          if (delta.version !== v) walkVersionRef.current = delta.version
-          if (delta.added.length > 0 || delta.removed.length > 0) {
-            model.batch([
-              ...delta.added.map(p => ({ type: 'add' as const, path: p })),
-              ...delta.removed.map(p => ({ type: 'remove' as const, path: p })),
-            ])
+    const connect = () => {
+      socket = new WebSocket(buildFileTreeStreamURL(projectSlug, showHiddenRef.current))
+      socket.onmessage = (event: MessageEvent<string>) => {
+        const treeModel = modelRef.current
+        if (!treeModel) return
+        try {
+          const msg = JSON.parse(event.data) as FileTreeStreamMessage
+          if (msg.type === 'hello' && typeof msg.version === 'number') {
+            walkVersionRef.current = msg.version
+            return
           }
+          if (msg.type === 'error') {
+            showErrorRef.current(msg.message)
+            return
+          }
+          if (msg.type === 'git-status') {
+            const next = new Map(gitStatusBySlug.value)
+            next.set(projectSlug, {
+              files: msg.files ?? 0,
+              insertions: msg.insertions ?? 0,
+              deletions: msg.deletions ?? 0,
+              entries: msg.entries,
+            })
+            gitStatusBySlug.value = next
+          }
+          applyFileTreeStreamMessage(msg, {
+            batch: ops => treeModel.batch(ops),
+            setGitStatus: entries => treeModel.setGitStatus(entries),
+            setVersion: version => { walkVersionRef.current = version },
+          })
+        } catch (e) {
+          console.warn('[gmux] file-tree: bad stream message', e)
         }
-      } catch (e) {
-        console.warn('[gmux] file-tree: delta poll failed', e)
       }
-    }, 2500)
-    return () => clearInterval(id)
-  }, [loadPaths])
+      socket.onclose = () => {
+        if (!stopped) retryTimer = setTimeout(connect, 1000)
+      }
+      socket.onerror = () => {
+        socket?.close()
+      }
+    }
+
+    connect()
+
+    return () => {
+      stopped = true
+      if (retryTimer !== null) clearTimeout(retryTimer)
+      socket?.close()
+    }
+  }, [projectSlug, showHidden])
 
   // ── Filename tooltips in shadow DOM ──
   // @pierre/trees renders inside a shadow root — we can't add `title` via CSS.

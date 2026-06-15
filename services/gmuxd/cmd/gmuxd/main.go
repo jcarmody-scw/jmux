@@ -1776,6 +1776,8 @@ func serve(stderr io.Writer) int {
 		return "", fmt.Errorf("project %q has no filesystem path rule", slug)
 	}
 
+	var refreshAndBroadcastWalk func(slug, root string, includeHidden bool)
+
 	// GET /v1/fs/{slug}?path=<rel> — list a directory.
 	mux.HandleFunc("GET /v1/fs/{slug}", func(w http.ResponseWriter, r *http.Request) {
 		slug := r.PathValue("slug")
@@ -1823,6 +1825,7 @@ func serve(stderr io.Writer) int {
 			writeError(w, http.StatusInternalServerError, "mkdir_failed", err.Error())
 			return
 		}
+		refreshAndBroadcastWalk(slug, root, false)
 		writeJSON(w, map[string]any{"ok": true})
 	})
 
@@ -1860,6 +1863,7 @@ func serve(stderr io.Writer) int {
 			return
 		}
 		f.Close()
+		refreshAndBroadcastWalk(slug, root, false)
 		writeJSON(w, map[string]any{"ok": true})
 	})
 
@@ -1893,6 +1897,7 @@ func serve(stderr io.Writer) int {
 			writeError(w, http.StatusInternalServerError, "rename_failed", err.Error())
 			return
 		}
+		refreshAndBroadcastWalk(slug, root, false)
 		writeJSON(w, map[string]any{"ok": true})
 	})
 
@@ -1930,6 +1935,7 @@ func serve(stderr io.Writer) int {
 			writeError(w, http.StatusInternalServerError, "move_failed", err.Error())
 			return
 		}
+		refreshAndBroadcastWalk(slug, root, false)
 		writeJSON(w, map[string]any{"ok": true})
 	})
 
@@ -1973,6 +1979,7 @@ func serve(stderr io.Writer) int {
 			writeError(w, http.StatusInternalServerError, "delete_failed", deleteErr.Error())
 			return
 		}
+		refreshAndBroadcastWalk(slug, root, false)
 		writeJSON(w, map[string]any{"ok": true})
 	})
 
@@ -2006,6 +2013,7 @@ func serve(stderr io.Writer) int {
 				written = append(written, fh.Filename)
 			}
 		}
+		refreshAndBroadcastWalk(slug, root, false)
 		writeJSON(w, map[string]any{"ok": true, "data": map[string]any{"written": written}})
 	})
 
@@ -2139,6 +2147,7 @@ func serve(stderr io.Writer) int {
 			writeError(w, http.StatusInternalServerError, "write_failed", err.Error())
 			return
 		}
+		refreshAndBroadcastWalk(slug, root, false)
 		writeJSON(w, map[string]any{"ok": true})
 	})
 
@@ -2245,24 +2254,19 @@ func serve(stderr io.Writer) int {
 	// ── Walk snapshot cache ──────────────────────────────────────────────────
 	//
 	// walkSnapshotCache maintains a per-slug full-walk result so that
-	// delta requests (walk?since=<version>) can be answered instantly
-	// without hitting the disk. A background goroutine refreshes each
-	// snapshot every 30 s. Version is a monotonically increasing int64.
-	type walkSnapshot struct {
-		paths        map[string]struct{}
-		version      int64
-		deltaAdded   []string // paths added vs previous snapshot
-		deltaRemoved []string // paths removed vs previous snapshot
-	}
+	// websocket streams and legacy delta requests can share one snapshot.
+	// A background goroutine refreshes each snapshot every 30 s. Version is a
+	// monotonically increasing int64.
 	var walkSnapMu sync.RWMutex
 	walkSnaps := map[string]*walkSnapshot{} // keyed by slug
+	fileTreeStreams := newFileTreeHub()
 
 	// refreshWalkSnapshot does a full (uncapped) walk, computes the delta vs the
-	// previous snapshot, and atomically updates the cache.
-	refreshWalkSnapshot := func(slug, root string, includeHidden bool) {
+	// previous snapshot, atomically updates the cache, and returns the new snapshot.
+	refreshWalkSnapshot := func(slug, root string, includeHidden bool) *walkSnapshot {
 		paths, err := walkProjectPaths(root, includeHidden, true)
 		if err != nil {
-			return
+			return nil
 		}
 		newSet := make(map[string]struct{}, len(paths))
 		for _, p := range paths {
@@ -2294,13 +2298,36 @@ func serve(stderr io.Writer) int {
 		if removed == nil {
 			removed = []string{}
 		}
-		walkSnaps[slug] = &walkSnapshot{
+		snap := &walkSnapshot{
 			paths:        newSet,
 			version:      version,
 			deltaAdded:   added,
 			deltaRemoved: removed,
 		}
+		walkSnaps[slug] = snap
 		walkSnapMu.Unlock()
+		return snap
+	}
+
+	refreshAndBroadcastWalk = func(slug, root string, includeHidden bool) {
+		if msg := fileTreeDeltaMessage(refreshWalkSnapshot(slug, root, includeHidden)); msg != nil {
+			fileTreeStreams.broadcast(slug, *msg)
+		}
+	}
+
+	gitStatusStreamMessage := func(ctx context.Context, root string) fileTreeStreamMessage {
+		shortstatCmd := exec.CommandContext(ctx, "git", "-C", root, "diff", "HEAD", "--shortstat")
+		shortstat, _ := shortstatCmd.Output()
+		files, insertions, deletions := parseGitShortstat(string(shortstat))
+		statusCmd := exec.CommandContext(ctx, "git", "-C", root, "status", "--porcelain=v1", "-uno")
+		status, _ := statusCmd.Output()
+		return fileTreeStreamMessage{
+			Type:       "git-status",
+			Files:      files,
+			Insertions: insertions,
+			Deletions:  deletions,
+			Entries:    parseGitPorcelain(string(status)),
+		}
 	}
 
 	// Background goroutine: refresh all cached snapshots every 30 s.
@@ -2319,10 +2346,70 @@ func serve(stderr io.Writer) int {
 				if err != nil {
 					continue
 				}
-				refreshWalkSnapshot(s, root, false)
+				refreshAndBroadcastWalk(s, root, false)
 			}
 		}
 	}()
+
+	// GET /v1/fs/{slug}/stream — websocket stream for file-tree deltas and git status.
+	mux.HandleFunc("GET /v1/fs/{slug}/stream", func(w http.ResponseWriter, r *http.Request) {
+		slug := r.PathValue("slug")
+		root, err := resolveFSProjectRoot(slug)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "not_found", err.Error())
+			return
+		}
+		includeHidden := r.URL.Query().Get("include_hidden") == "true"
+
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+			InsecureSkipVerify: true,
+		})
+		if err != nil {
+			log.Printf("filetree stream: accept: %v", err)
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "")
+
+		ctx := r.Context()
+		snap := refreshWalkSnapshot(slug, root, includeHidden)
+		if snap != nil {
+			if err := wsWriteJSON(ctx, conn, fileTreeStreamMessage{Type: "hello", Version: snap.version}); err != nil {
+				return
+			}
+		}
+		if err := wsWriteJSON(ctx, conn, gitStatusStreamMessage(ctx, root)); err != nil {
+			return
+		}
+
+		fileEvents, cancelFileEvents := fileTreeStreams.subscribe(slug)
+		defer cancelFileEvents()
+		storeEvents, cancelStoreEvents := sessions.Subscribe()
+		defer cancelStoreEvents()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case msg, ok := <-fileEvents:
+				if !ok {
+					return
+				}
+				if err := wsWriteJSON(ctx, conn, msg); err != nil {
+					return
+				}
+			case ev, ok := <-storeEvents:
+				if !ok {
+					return
+				}
+				if ev.Type != "git-status" || ev.ID != slug {
+					continue
+				}
+				if err := wsWriteJSON(ctx, conn, gitStatusStreamMessage(ctx, root)); err != nil {
+					return
+				}
+			}
+		}
+	})
 
 	// GET /v1/fs/{slug}/walk
 	//   default          → depth-3 JSON array (fast initial load)
