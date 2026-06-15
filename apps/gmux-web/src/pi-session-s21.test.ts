@@ -2,6 +2,11 @@ import { describe, expect, it } from 'vitest'
 import {
   buildTaskProgressSummary,
   buildTurnScrubberItems,
+  clampRightPanelWidth,
+  RIGHT_PANEL_DEFAULT_WIDTH,
+  RIGHT_PANEL_MAX_WIDTH,
+  RIGHT_PANEL_MIN_WIDTH,
+  resizedRightPanelWidth,
   shouldAutoScrollMessages,
   taskProgressFromExtensionEvent,
   type RenderItem,
@@ -121,5 +126,23 @@ describe('s-21 task progress helpers', () => {
         { id: 's2', title: 'Implement', status: 'IN_PROGRESS' },
       ],
     })
+  })
+})
+
+describe('s-21 right panel resize helpers', () => {
+  it('keeps the default width inside the configured bounds', () => {
+    expect(clampRightPanelWidth(RIGHT_PANEL_DEFAULT_WIDTH)).toBe(RIGHT_PANEL_DEFAULT_WIDTH)
+  })
+
+  it('resizes from the left edge so dragging left widens and dragging right narrows', () => {
+    expect(resizedRightPanelWidth({ startWidth: 180, startClientX: 900, currentClientX: 840 })).toBe(240)
+    expect(resizedRightPanelWidth({ startWidth: 180, startClientX: 900, currentClientX: 960 })).toBe(120)
+  })
+
+  it('clamps right panel width to min and max bounds', () => {
+    expect(clampRightPanelWidth(RIGHT_PANEL_MIN_WIDTH - 40)).toBe(RIGHT_PANEL_MIN_WIDTH)
+    expect(clampRightPanelWidth(RIGHT_PANEL_MAX_WIDTH + 40)).toBe(RIGHT_PANEL_MAX_WIDTH)
+    expect(resizedRightPanelWidth({ startWidth: RIGHT_PANEL_MAX_WIDTH, startClientX: 800, currentClientX: 600 })).toBe(RIGHT_PANEL_MAX_WIDTH)
+    expect(resizedRightPanelWidth({ startWidth: RIGHT_PANEL_MIN_WIDTH, startClientX: 800, currentClientX: 1000 })).toBe(RIGHT_PANEL_MIN_WIDTH)
   })
 })

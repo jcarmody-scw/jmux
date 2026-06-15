@@ -2,7 +2,7 @@
 // Connects to /ws/{session.id}, renders streaming events as a message list.
 import { type Session } from './types'
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks'
-import type { RefObject } from 'preact'
+import type { JSX, RefObject } from 'preact'
 
 // ---------------------------------------------------------------------------
 // Content block types (mirroring SDK AgentMessage content)
@@ -253,6 +253,22 @@ export function buildTaskProgressSummary(task: TaskProgress): TaskProgressSummar
   const total = task.steps.length
   const done = task.steps.filter(step => step.status === 'DONE').length
   return { done, total, label: `${done} / ${total}` }
+}
+
+export const RIGHT_PANEL_MIN_WIDTH = 120
+export const RIGHT_PANEL_DEFAULT_WIDTH = 180
+export const RIGHT_PANEL_MAX_WIDTH = 420
+
+export function clampRightPanelWidth(width: number): number {
+  return Math.min(RIGHT_PANEL_MAX_WIDTH, Math.max(RIGHT_PANEL_MIN_WIDTH, Math.round(width)))
+}
+
+export function resizedRightPanelWidth(options: {
+  startWidth: number
+  startClientX: number
+  currentClientX: number
+}): number {
+  return clampRightPanelWidth(options.startWidth + options.startClientX - options.currentClientX)
 }
 
 function isTaskStepStatus(value: unknown): value is TaskStepStatus {
@@ -955,12 +971,15 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
   const [inputArea, setInputArea] = useState<InputAreaState>(initialInputAreaState)
   const [taskProgress, setTaskProgress] = useState<TaskProgress | null>(null)
   const [scrollNavigationLocked, setScrollNavigationLocked] = useState(false)
+  const [rightPanelWidth, setRightPanelWidth] = useState(RIGHT_PANEL_DEFAULT_WIDTH)
+  const [rightPanelResizing, setRightPanelResizing] = useState(false)
 
   const wsRef = useRef<WebSocket | null>(null)
   const retryCountRef = useRef(0)
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const messagesRef = useRef<HTMLDivElement>(null)
   const itemRefs = useRef<Record<number, HTMLDivElement | null>>({})
+  const rightPanelResizeRef = useRef<{ startWidth: number; startClientX: number } | null>(null)
 
   // Derive: index of the last user or command item — sticky while streaming.
   // This is the prompt or command that triggered the active agent run.
@@ -1127,6 +1146,41 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
     }
   }, [inputText, sendMessage])
 
+  const startRightPanelResize = useCallback((event: JSX.TargetedPointerEvent<HTMLButtonElement>) => {
+    event.preventDefault()
+    rightPanelResizeRef.current = {
+      startWidth: rightPanelWidth,
+      startClientX: event.clientX,
+    }
+    setRightPanelResizing(true)
+  }, [rightPanelWidth])
+
+  useEffect(() => {
+    if (!rightPanelResizing) return
+    const updateWidth = (event: PointerEvent) => {
+      const resize = rightPanelResizeRef.current
+      if (!resize) return
+      setRightPanelWidth(resizedRightPanelWidth({
+        ...resize,
+        currentClientX: event.clientX,
+      }))
+    }
+    const finishResize = () => {
+      rightPanelResizeRef.current = null
+      setRightPanelResizing(false)
+    }
+    window.addEventListener('pointermove', updateWidth)
+    window.addEventListener('pointerup', finishResize)
+    window.addEventListener('pointercancel', finishResize)
+    document.body.classList.add('pi-session-right-panel-resizing')
+    return () => {
+      window.removeEventListener('pointermove', updateWidth)
+      window.removeEventListener('pointerup', finishResize)
+      window.removeEventListener('pointercancel', finishResize)
+      document.body.classList.remove('pi-session-right-panel-resizing')
+    }
+  }, [rightPanelResizing])
+
   const turnScrubberItems = buildTurnScrubberItems(items, streaming ? lastUserIndex : -1)
   const jumpToTurn = useCallback((itemIndex: number) => {
     setScrollNavigationLocked(true)
@@ -1186,7 +1240,14 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
           </div>
           <PiJumpToBottom containerRef={messagesRef} onJump={jumpToBottom} />
         </div>
-        <aside class="pi-session-right-panel">
+        <button
+          type="button"
+          class="pi-session-right-panel-resize-handle"
+          aria-label="Resize right panel"
+          title="Drag to resize"
+          onPointerDown={startRightPanelResize}
+        />
+        <aside class="pi-session-right-panel" style={{ width: `${rightPanelWidth}px` }}>
           <TurnScrubber turns={turnScrubberItems} onJump={jumpToTurn} />
           <TaskProgressWidget task={taskProgress} />
         </aside>

@@ -3548,8 +3548,33 @@ a.home-host-link:hover {
   flex-wrap: wrap;
 }
 
+.pi-session-right-panel-resize-handle {
+  flex: 0 0 8px;
+  width: 8px;
+  min-width: 8px;
+  padding: 0;
+  border: 0;
+  border-left: 1px solid transparent;
+  border-right: 1px solid transparent;
+  background: transparent;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.pi-session-right-panel-resize-handle:hover,
+.pi-session-right-panel-resize-handle:focus-visible {
+  border-left-color: var(--border);
+  border-right-color: var(--border);
+  background: var(--bg-secondary);
+  outline: none;
+}
+
+body.pi-session-right-panel-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
 .pi-session-right-panel {
-  width: 180px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
