@@ -11,7 +11,6 @@ import { createTerminalIO, type TerminalSize } from './terminal-io'
 import { measureTerminalFit } from './terminal-fit'
 import { applyWtermTheme } from './terminal-theme'
 import { decideViewportResize, sameSize, useViewportResize } from './terminal-resize'
-import { getGhosttyCore } from './terminal-init'
 import { useWebSocket } from './use-websocket'
 import type { Session } from './types'
 import type { ITheme } from './types'
@@ -274,11 +273,9 @@ export function TerminalView({
 
     const run = async () => {
       const { WTerm } = await import('@wterm/dom')
-      const core = await getGhosttyCore()
       if (cancelled || !containerRef.current) return
 
       term = new WTerm(containerRef.current, {
-        core,
         autoResize: false,    // gmux owns resize decisions
         cursorBlink: terminalOptions.cursorBlink,
       })

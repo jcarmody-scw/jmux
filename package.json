@@ -5,12 +5,14 @@
   "description": "gmux monorepo",
   "packageManager": "pnpm@10.32.1",
   "scripts": {
-    "build": "moon run :build",
+    "build": "npm run build-prod",
+    "build-dev": "moon run :build-dev",
+    "build-prod": "moon run :build-prod",
     "dev": "moon run :dev",
     "test": "moon run :test",
     "test:e2e": "npx playwright test --config e2e/playwright.config.ts",
     "lint": "biome lint . && moon run :lint",
-    "check": "moon check :build :test",
+    "check": "moon run :build :test",
     "graph": "moon project-graph"
   },
   "pnpm": {

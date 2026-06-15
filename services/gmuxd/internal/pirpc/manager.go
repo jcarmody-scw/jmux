@@ -34,8 +34,9 @@ type subprocess struct {
 	stdin io.WriteCloser
 	done  chan struct{}
 
-	mu    sync.Mutex
-	conns []*websocket.Conn
+	mu          sync.Mutex
+	conns       []*websocket.Conn
+	sessionFile string
 }
 
 // New creates a Manager backed by the given session store.
@@ -182,6 +183,9 @@ func (m *Manager) readLoop(sessionID string, proc *subprocess, stdout io.Reader)
 		if peek.Type == "response" && peek.Command == "get_state" && peek.Success && peek.Data.Model.ID != "" {
 			modelID := peek.Data.Model.ID
 			sessFile := peek.Data.SessionFile
+			proc.mu.Lock()
+			proc.sessionFile = sessFile
+			proc.mu.Unlock()
 			m.store.Update(sessionID, func(s *store.Session) {
 				s.Subtitle = modelID
 			})
@@ -282,6 +286,10 @@ func (m *Manager) HandleWebSocket(w http.ResponseWriter, r *http.Request, sessio
 		return
 	}
 	log.Printf("pirpc: ws client connected %s (remote=%s)", sessionID, r.RemoteAddr)
+
+	if err := proc.replayPiJSONLHistory(r.Context(), conn); err != nil {
+		log.Printf("pirpc: %s: replay history: %v", sessionID, err)
+	}
 
 	// Register this connection for broadcast.
 	proc.mu.Lock()
@@ -426,4 +434,56 @@ func truncate(s []byte, maxLen int) string {
 		return string(s)
 	}
 	return string(s[:maxLen]) + "…"
+}
+
+func (p *subprocess) replayPiJSONLHistory(ctx context.Context, conn *websocket.Conn) error {
+	p.mu.Lock()
+	sessionFile := p.sessionFile
+	p.mu.Unlock()
+	if sessionFile == "" {
+		return nil
+	}
+	f, err := os.Open(sessionFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	defer f.Close()
+
+	if err := writeWSJSON(ctx, conn, map[string]string{"type": "history_reset"}); err != nil {
+		return err
+	}
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 256*1024), 1024*1024)
+	for scanner.Scan() {
+		var entry struct {
+			Type    string          `json:"type"`
+			Message json.RawMessage `json:"message"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
+			continue
+		}
+		if entry.Type != "message" || len(entry.Message) == 0 {
+			continue
+		}
+		payload := map[string]json.RawMessage{
+			"type":    json.RawMessage(`"history_message"`),
+			"message": entry.Message,
+		}
+		if err := writeWSJSON(ctx, conn, payload); err != nil {
+			return err
+		}
+	}
+	return scanner.Err()
+}
+
+func writeWSJSON(ctx context.Context, conn *websocket.Conn, value any) error {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	return conn.Write(ctx, websocket.MessageText, data)
 }

@@ -2,10 +2,23 @@ language: bash
 
 tasks:
   dev:
-    script: watchexec -r -e go -w . -w ../../packages/adapter -- 'go build -o ../../bin/gmux ./cmd/gmux && exec ../../bin/gmux pi'
+    script: |
+      mkdir -p ../../bin/dev
+      watchexec -r -e go -w . -w ../../packages/adapter -- 'go build -o ../../bin/dev/gmux ./cmd/gmux && exec ../../bin/dev/gmux pi'
     preset: server
-  build:
-    script: GOOS=darwin GOARCH=arm64 go build -o ../../bin/gmux ./cmd/gmux
+  build-dev:
+    script: |
+      mkdir -p ../../bin/dev
+      go build -o ../../bin/dev/gmux ./cmd/gmux
+    inputs:
+      - "cmd/**/*"
+      - "internal/**/*"
+      - "go.mod"
+      - "/packages/adapter/**/*.go"
+  build-prod:
+    script: |
+      mkdir -p ../../bin/prod
+      go build -o ../../bin/prod/gmux ./cmd/gmux
     inputs:
       - "cmd/**/*"
       - "internal/**/*"

@@ -2,7 +2,7 @@
 // Connects to /ws/{session.id}, renders streaming events as a message list.
 import { type Session } from './types'
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks'
-import type { RefObject } from 'preact'
+import type { JSX, RefObject } from 'preact'
 
 // ---------------------------------------------------------------------------
 // Content block types (mirroring SDK AgentMessage content)
@@ -44,6 +44,31 @@ export interface ToolExec {
 
 export type ToolExecMap = Record<string, ToolExec>
 
+export interface ActiveToolStatus {
+  id: string
+  name: string
+  label: string
+  detail: string
+}
+
+export interface InputAreaState {
+  activeTools: ActiveToolStatus[]
+  steeringQueue: string[]
+  followUpQueue: string[]
+}
+
+export const initialInputAreaState: InputAreaState = {
+  activeTools: [],
+  steeringQueue: [],
+  followUpQueue: [],
+}
+
+export interface PromptPayload {
+  type: 'prompt'
+  text: string
+  streamingBehavior?: 'steer'
+}
+
 // ---------------------------------------------------------------------------
 // Render items
 // ---------------------------------------------------------------------------
@@ -53,10 +78,21 @@ interface UserItem {
   text: string
 }
 
+export type CommandStatus = 'pending' | 'accepted' | 'handled' | 'error' | 'unknown'
+
 export interface CommandItem {
   kind: 'command'
   text: string
   label: string
+  args: string
+  status: CommandStatus
+  statusText: string
+}
+
+export interface CommandOutputItem {
+  kind: 'command-output'
+  subtype: 'info' | 'warning' | 'error'
+  text: string
 }
 
 export interface AssistantItem {
@@ -74,7 +110,36 @@ interface SystemItem {
   text: string
 }
 
-export type RenderItem = UserItem | CommandItem | AssistantItem | SystemItem
+export type RenderItem = UserItem | CommandItem | CommandOutputItem | AssistantItem | SystemItem
+
+export interface TurnScrubberItem {
+  id: string
+  itemIndex: number
+  label: string
+  title: string
+  active: boolean
+}
+
+export type TaskStepStatus = 'PENDING' | 'IN_PROGRESS' | 'DONE'
+
+export interface TaskProgressStep {
+  id: string
+  title: string
+  status: TaskStepStatus
+}
+
+export interface TaskProgress {
+  id?: string
+  title: string
+  status: string
+  steps: TaskProgressStep[]
+}
+
+export interface TaskProgressSummary {
+  done: number
+  total: number
+  label: string
+}
 
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for tests)
@@ -126,13 +191,212 @@ export function slashCommandLabel(text: string): string {
   return /^\/\S+/.test(token) && token !== '/' ? token : '/command'
 }
 
+/** Return the arguments after the slash command token, for example sonnet from /model sonnet. */
+export function slashCommandArgs(text: string): string {
+  const trimmed = text.trimStart()
+  const label = slashCommandLabel(trimmed)
+  if (label === '/command') return ''
+  return trimmed.slice(label.length).trimStart()
+}
+
+function commandNameFromLabel(label: string): string {
+  return label.startsWith('/') ? label.slice(1) : label
+}
+
+function commandStatusForLabel(label: string, knownCommands?: ReadonlySet<string>): Pick<CommandItem, 'status' | 'statusText'> {
+  if (knownCommands && !knownCommands.has(commandNameFromLabel(label))) {
+    return { status: 'unknown', statusText: 'unknown command' }
+  }
+  return { status: 'pending', statusText: 'running' }
+}
+
 /** Create the local render item shown after user input is sent. */
-export function inputItemForText(text: string): UserItem | CommandItem {
+export function inputItemForText(text: string, knownCommands?: ReadonlySet<string>): UserItem | CommandItem {
   const trimmed = text.trim()
   if (isSlashCommand(trimmed)) {
-    return { kind: 'command', text: trimmed, label: slashCommandLabel(trimmed) }
+    const label = slashCommandLabel(trimmed)
+    return {
+      kind: 'command',
+      text: trimmed,
+      label,
+      args: slashCommandArgs(trimmed),
+      ...commandStatusForLabel(label, knownCommands),
+    }
   }
   return { kind: 'user', text: trimmed }
+}
+
+export function buildTurnScrubberItems(items: RenderItem[], activeItemIndex: number): TurnScrubberItem[] {
+  return items.flatMap((item, itemIndex) => {
+    if (item.kind !== 'user' && item.kind !== 'command') return []
+    const title = item.kind === 'command' ? item.text : item.text
+    return [{
+      id: `turn-${itemIndex}`,
+      itemIndex,
+      label: title,
+      title,
+      active: itemIndex === activeItemIndex,
+    }]
+  })
+}
+
+export function shouldAutoScrollMessages(options: {
+  distanceFromBottom: number
+  nearBottomPx: number
+  navigationLocked: boolean
+}): boolean {
+  if (options.navigationLocked) return false
+  return options.distanceFromBottom < options.nearBottomPx
+}
+
+export function buildTaskProgressSummary(task: TaskProgress): TaskProgressSummary {
+  const total = task.steps.length
+  const done = task.steps.filter(step => step.status === 'DONE').length
+  return { done, total, label: `${done} / ${total}` }
+}
+
+export const RIGHT_PANEL_MIN_WIDTH = 120
+export const RIGHT_PANEL_DEFAULT_WIDTH = 180
+export const RIGHT_PANEL_MAX_WIDTH = 420
+
+export function clampRightPanelWidth(width: number): number {
+  return Math.min(RIGHT_PANEL_MAX_WIDTH, Math.max(RIGHT_PANEL_MIN_WIDTH, Math.round(width)))
+}
+
+export function resizedRightPanelWidth(options: {
+  startWidth: number
+  startClientX: number
+  currentClientX: number
+}): number {
+  return clampRightPanelWidth(options.startWidth + options.startClientX - options.currentClientX)
+}
+
+function isTaskStepStatus(value: unknown): value is TaskStepStatus {
+  return value === 'PENDING' || value === 'IN_PROGRESS' || value === 'DONE'
+}
+
+function taskProgressFromWidgetLines(lines: unknown): TaskProgress | null | undefined {
+  if (!Array.isArray(lines)) return undefined
+  const raw = typeof lines[0] === 'string' ? lines[0] : ''
+  if (!raw) return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return undefined
+  }
+  const envelope = parsed as { type?: unknown; task?: unknown }
+  if (envelope.type !== 'captain_task_progress' || !envelope.task || typeof envelope.task !== 'object') return undefined
+  const task = envelope.task as { id?: unknown; title?: unknown; status?: unknown; steps?: unknown }
+  if (typeof task.title !== 'string' || typeof task.status !== 'string') return undefined
+  const steps = Array.isArray(task.steps)
+    ? task.steps.flatMap(step => {
+      if (!step || typeof step !== 'object') return []
+      const typed = step as { id?: unknown; title?: unknown; status?: unknown }
+      if (typeof typed.id !== 'string' || typeof typed.title !== 'string' || !isTaskStepStatus(typed.status)) return []
+      return [{ id: typed.id, title: typed.title, status: typed.status }]
+    })
+    : []
+  return {
+    ...(typeof task.id === 'string' ? { id: task.id } : {}),
+    title: task.title,
+    status: task.status,
+    steps,
+  }
+}
+
+export function taskProgressFromExtensionEvent(ev: Record<string, unknown>): TaskProgress | null | undefined {
+  if (ev.type !== 'extension_ui_request') return undefined
+  if (ev.method === 'setWidget' && ev.widgetKey === 'captain-task-progress') {
+    return taskProgressFromWidgetLines(ev.widgetLines)
+  }
+  if (ev.method !== 'setStatus' || ev.statusKey !== 'captain-task') return undefined
+  const statusText = typeof ev.statusText === 'string' ? ev.statusText.trim() : ''
+  if (!statusText) return null
+  return { title: statusText, status: 'IN_PROGRESS', steps: [] }
+}
+
+function firstTextBlock(message: unknown): string {
+  const content = (message as { content?: unknown } | undefined)?.content
+  if (!Array.isArray(content)) return ''
+  const firstText = content.find((block): block is TextContent =>
+    typeof block === 'object' && block !== null && (block as { type?: unknown }).type === 'text',
+  )
+  return firstText?.text?.trim() ?? ''
+}
+
+/** Extract command names from a pi-rpc get_commands response. */
+export function extractCommandNames(ev: Record<string, unknown>): string[] | null {
+  if (ev.type !== 'response' || ev.command !== 'get_commands' || ev.success !== true) return null
+  const data = ev.data as { commands?: Array<{ name?: unknown }> } | undefined
+  if (!Array.isArray(data?.commands)) return []
+  return data.commands
+    .map(command => command.name)
+    .filter((name): name is string => typeof name === 'string' && name.length > 0)
+}
+
+function toolDetail(toolName: string, args: Record<string, unknown>): string {
+  switch (toolName) {
+    case 'bash':
+      return String(args.command ?? '')
+    case 'read':
+    case 'edit':
+    case 'write':
+      return String(args.path ?? '')
+    default:
+      return ''
+  }
+}
+
+export function reduceInputAreaState(state: InputAreaState, ev: Record<string, unknown>): InputAreaState {
+  switch (ev.type) {
+    case 'tool_execution_start': {
+      const id = String(ev.toolCallId)
+      const name = String(ev.toolName)
+      const args = (ev.args as Record<string, unknown>) ?? {}
+      const active: ActiveToolStatus = {
+        id,
+        name,
+        label: name,
+        detail: toolDetail(name, args),
+      }
+      return {
+        ...state,
+        activeTools: [...state.activeTools.filter(tool => tool.id !== id), active],
+      }
+    }
+    case 'tool_execution_end': {
+      const id = String(ev.toolCallId)
+      return { ...state, activeTools: state.activeTools.filter(tool => tool.id !== id) }
+    }
+    case 'queue_update': {
+      return {
+        ...state,
+        steeringQueue: Array.isArray(ev.steering) ? ev.steering.map(String) : state.steeringQueue,
+        followUpQueue: Array.isArray(ev.followUp) ? ev.followUp.map(String) : state.followUpQueue,
+      }
+    }
+    case 'agent_end':
+    case 'error':
+      return { ...state, activeTools: [] }
+    default:
+      return state
+  }
+}
+
+export function formatActiveToolStatus(state: InputAreaState): string {
+  if (!state.activeTools.length) return ''
+  if (state.activeTools.length === 1) {
+    const tool = state.activeTools[0]
+    return tool.detail ? `running ${tool.label}: ${tool.detail}` : `running ${tool.label}`
+  }
+  return `running ${state.activeTools.length} tools`
+}
+
+export function createPromptPayload(text: string, isStreaming: boolean): PromptPayload {
+  return isStreaming
+    ? { type: 'prompt', text, streamingBehavior: 'steer' }
+    : { type: 'prompt', text }
 }
 
 // ---------------------------------------------------------------------------
@@ -246,6 +510,33 @@ function updateLastAssistantToolExec(
   return prev
 }
 
+function updateLastCommandItem(
+  prev: RenderItem[],
+  update: (item: CommandItem) => CommandItem,
+  options: { includeUnknown?: boolean } = {},
+): RenderItem[] {
+  const next = [...prev]
+  for (let i = next.length - 1; i >= 0; i--) {
+    const item = next[i]
+    if (item.kind === 'command') {
+      const cur = item as CommandItem
+      if (cur.status === 'unknown' && !options.includeUnknown) return prev
+      next[i] = update(cur)
+      return next
+    }
+    if (item.kind !== 'command-output') return prev
+  }
+  return prev
+}
+
+function commandOutputFromNotify(ev: Record<string, unknown>): CommandOutputItem | null {
+  if (ev.type !== 'extension_ui_request' || ev.method !== 'notify') return null
+  const notifyType = ev.notifyType === 'warning' || ev.notifyType === 'error' ? ev.notifyType : 'info'
+  const message = String(ev.message ?? '')
+  if (!message) return null
+  return { kind: 'command-output', subtype: notifyType, text: message }
+}
+
 // ---------------------------------------------------------------------------
 // Pure items reducer (exported for tests)
 // ---------------------------------------------------------------------------
@@ -253,6 +544,25 @@ function updateLastAssistantToolExec(
 /** Apply one SDK event to the items array, returning the new array. */
 export function reduceItems(items: RenderItem[], ev: Record<string, unknown>): RenderItem[] {
   switch (ev.type) {
+    case 'history_reset': {
+      return []
+    }
+    case 'history_message': {
+      const message = ev.message as { role?: string } | undefined
+      if (message?.role === 'user') {
+        const text = firstTextBlock(message)
+        return text ? [...items, inputItemForText(text)] : items
+      }
+      if (message?.role === 'assistant') {
+        return [...items, {
+          kind: 'assistant',
+          blocks: extractBlocks(message),
+          toolExecMap: {},
+          complete: true,
+        }]
+      }
+      return items
+    }
     case 'session_ready': {
       return [...items, { kind: 'system', subtype: 'ready', text: getSystemText(ev) }]
     }
@@ -332,6 +642,25 @@ export function reduceItems(items: RenderItem[], ev: Record<string, unknown>): R
         done: true,
         isError: Boolean(ev.isError),
       }))
+    }
+    case 'response': {
+      if (ev.command !== 'prompt') return items
+      const success = ev.success === true
+      return updateLastCommandItem(items, item => ({
+        ...item,
+        status: success ? 'accepted' : 'error',
+        statusText: success ? 'accepted' : String(ev.error ?? 'command failed'),
+      }), { includeUnknown: !success })
+    }
+    case 'extension_ui_request': {
+      const output = commandOutputFromNotify(ev)
+      if (!output) return items
+      const withHandledCommand = updateLastCommandItem(items, item => ({
+        ...item,
+        status: item.status === 'error' || item.status === 'unknown' ? item.status : 'handled',
+        statusText: item.status === 'error' || item.status === 'unknown' ? item.statusText : 'output',
+      }), { includeUnknown: true })
+      return [...withHandledCommand, output]
     }
     // agent_end, queue_update, session_info_changed, thinking_level_changed, turn_end,
     // message_start: no items change
@@ -509,9 +838,18 @@ function RenderItemView({ item, isSticky, expandAllThinking }: { item: RenderIte
   }
   if (item.kind === 'command') {
     return (
-      <div class="pi-session-item pi-session-item-command">
+      <div class={`pi-session-item pi-session-item-command pi-session-item-command-${item.status}`}>
         <span class="pi-session-command-label">{item.label}</span>
-        <span class="pi-session-command-text">{item.text}</span>
+        {item.args && <span class="pi-session-command-args">{item.args}</span>}
+        <span class="pi-session-command-status">{item.statusText}</span>
+      </div>
+    )
+  }
+  if (item.kind === 'command-output') {
+    return (
+      <div class={`pi-session-item pi-session-command-output pi-session-command-output-${item.subtype}`}>
+        <span class="pi-session-command-output-prefix">↳</span>
+        <span class="pi-session-command-output-text">{item.text}</span>
       </div>
     )
   }
@@ -530,7 +868,13 @@ function RenderItemView({ item, isSticky, expandAllThinking }: { item: RenderIte
 // Jump-to-bottom for pi-session (uses a messages container ref, not WTerm)
 // ---------------------------------------------------------------------------
 
-function PiJumpToBottom({ containerRef }: { containerRef: RefObject<HTMLDivElement> }) {
+function PiJumpToBottom({
+  containerRef,
+  onJump,
+}: {
+  containerRef: RefObject<HTMLDivElement>
+  onJump?: () => void
+}) {
   const [atBottom, setAtBottom] = useState(true)
 
   useEffect(() => {
@@ -555,11 +899,55 @@ function PiJumpToBottom({ containerRef }: { containerRef: RefObject<HTMLDivEleme
       title="Jump to bottom"
       onClick={() => {
         const el = containerRef.current
+        onJump?.()
         if (el) el.scrollTop = el.scrollHeight
       }}
     >
       ↓
     </button>
+  )
+}
+
+function TurnScrubber({ turns, onJump }: { turns: TurnScrubberItem[]; onJump: (itemIndex: number) => void }) {
+  return (
+    <nav class="pi-session-turn-scrubber" aria-label="Turn scrubber">
+      {turns.length === 0 && <div class="pi-session-right-empty">no turns yet</div>}
+      {turns.map(turn => (
+        <button
+          key={turn.id}
+          type="button"
+          class={`pi-session-turn-scrubber-item${turn.active ? ' pi-session-turn-scrubber-item-active' : ''}`}
+          title={turn.title}
+          onClick={() => onJump(turn.itemIndex)}
+        >
+          <span class="pi-session-turn-dot" aria-hidden="true" />
+          <span class="pi-session-turn-label">{turn.label}</span>
+        </button>
+      ))}
+    </nav>
+  )
+}
+
+function TaskProgressWidget({ task }: { task: TaskProgress | null }) {
+  if (!task) return null
+  const summary = buildTaskProgressSummary(task)
+  return (
+    <aside class="pi-session-task-widget" aria-label="Task progress">
+      <div class="pi-session-task-widget-header">
+        <span class="pi-session-task-title">{task.title}</span>
+        <span class="pi-session-task-summary">{summary.label}</span>
+      </div>
+      {task.steps.length > 0 && (
+        <div class="pi-session-task-steps">
+          {task.steps.map(step => (
+            <div key={step.id} class={`pi-session-task-step pi-session-task-step-${step.status.toLowerCase()}`}>
+              <span class="pi-session-task-step-marker">{step.status === 'DONE' ? '✓' : step.status === 'IN_PROGRESS' ? '▸' : '○'}</span>
+              <span class="pi-session-task-step-title">{step.title}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </aside>
   )
 }
 
@@ -579,16 +967,24 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
   const [inputText, setInputText] = useState('')
   const [sessionInfo, setSessionInfo] = useState<{ model: string; thinkingLevel: string } | null>(null)
   const [expandAllThinking, setExpandAllThinking] = useState(false)
+  const [commandNames, setCommandNames] = useState<Set<string> | null>(null)
+  const [inputArea, setInputArea] = useState<InputAreaState>(initialInputAreaState)
+  const [taskProgress, setTaskProgress] = useState<TaskProgress | null>(null)
+  const [scrollNavigationLocked, setScrollNavigationLocked] = useState(false)
+  const [rightPanelWidth, setRightPanelWidth] = useState(RIGHT_PANEL_DEFAULT_WIDTH)
+  const [rightPanelResizing, setRightPanelResizing] = useState(false)
 
   const wsRef = useRef<WebSocket | null>(null)
   const retryCountRef = useRef(0)
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const messagesRef = useRef<HTMLDivElement>(null)
+  const itemRefs = useRef<Record<number, HTMLDivElement | null>>({})
+  const rightPanelResizeRef = useRef<{ startWidth: number; startClientX: number } | null>(null)
 
-  // Derive: index of the last user item — sticky while streaming.
-  // This is the prompt that triggered the active agent run.
+  // Derive: index of the last user or command item — sticky while streaming.
+  // This is the prompt or command that triggered the active agent run.
   const lastUserIndex: number = streaming
-    ? items.reduce((idx: number, item, i) => (item.kind === 'user' ? i : idx), -1)
+    ? items.reduce((idx: number, item, i) => (item.kind === 'user' || item.kind === 'command' ? i : idx), -1)
     : -1
 
   // Conditional auto-scroll: only scroll to bottom when already near the bottom.
@@ -597,21 +993,41 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
     const el = messagesRef.current
     if (!el) return
     const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-    if (distFromBottom < SCROLL_NEAR_BOTTOM_PX) {
+    if (shouldAutoScrollMessages({
+      distanceFromBottom: distFromBottom,
+      nearBottomPx: SCROLL_NEAR_BOTTOM_PX,
+      navigationLocked: scrollNavigationLocked,
+    })) {
       el.scrollTop = el.scrollHeight
     }
-  }, [items])
+  }, [items, scrollNavigationLocked])
+
+  useEffect(() => {
+    const el = messagesRef.current
+    if (!el) return
+    const updateNavigationLock = () => {
+      const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+      setScrollNavigationLocked(distFromBottom >= SCROLL_NEAR_BOTTOM_PX)
+    }
+    el.addEventListener('scroll', updateNavigationLock, { passive: true })
+    return () => el.removeEventListener('scroll', updateNavigationLock)
+  }, [])
 
   // Stable event dispatcher — uses reduceItems for all items changes
   // Stable event dispatcher — uses reduceItems for all items changes
   const dispatchEvent = useCallback((ev: Record<string, unknown>) => {
-    // Capture session info from session_ready before reducer
+    // Capture session info and command registry before reducer
     const info = parseSessionInfo(ev)
     if (info) setSessionInfo(info)
+    const names = extractCommandNames(ev)
+    if (names) setCommandNames(new Set(names))
+    const maybeTask = taskProgressFromExtensionEvent(ev)
+    if (maybeTask !== undefined) setTaskProgress(maybeTask)
 
     // Items update via pure reducer
     setItems(prev => reduceItems(prev, ev))
 
+    setInputArea(prev => reduceInputAreaState(prev, ev))
     // Streaming state management (not captured by reduceItems)
     switch (ev.type) {
       case 'agent_start': {
@@ -645,6 +1061,7 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
     ws.onopen = () => {
       retryCountRef.current = 0
       setWsState('open')
+      ws.send(JSON.stringify({ id: 'gmux-web-get-commands', type: 'get_commands' }))
     }
 
     ws.onmessage = (ev) => {
@@ -692,10 +1109,10 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
     if (!trimmed) return
     const ws = wsRef.current
     if (!ws || ws.readyState !== WebSocket.OPEN) return
-    ws.send(JSON.stringify({ type: 'prompt', text: trimmed }))
-    setItems(prev => [...prev, inputItemForText(trimmed)])
+    ws.send(JSON.stringify(createPromptPayload(trimmed, streaming)))
+    setItems(prev => [...prev, inputItemForText(trimmed, commandNames ?? undefined)])
     setInputText('')
-  }, [])
+  }, [commandNames, streaming])
 
   const sendAbort = useCallback(() => {
     const ws = wsRef.current
@@ -729,10 +1146,57 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
     }
   }, [inputText, sendMessage])
 
+  const startRightPanelResize = useCallback((event: JSX.TargetedPointerEvent<HTMLButtonElement>) => {
+    event.preventDefault()
+    rightPanelResizeRef.current = {
+      startWidth: rightPanelWidth,
+      startClientX: event.clientX,
+    }
+    setRightPanelResizing(true)
+  }, [rightPanelWidth])
+
+  useEffect(() => {
+    if (!rightPanelResizing) return
+    const updateWidth = (event: PointerEvent) => {
+      const resize = rightPanelResizeRef.current
+      if (!resize) return
+      setRightPanelWidth(resizedRightPanelWidth({
+        ...resize,
+        currentClientX: event.clientX,
+      }))
+    }
+    const finishResize = () => {
+      rightPanelResizeRef.current = null
+      setRightPanelResizing(false)
+    }
+    window.addEventListener('pointermove', updateWidth)
+    window.addEventListener('pointerup', finishResize)
+    window.addEventListener('pointercancel', finishResize)
+    document.body.classList.add('pi-session-right-panel-resizing')
+    return () => {
+      window.removeEventListener('pointermove', updateWidth)
+      window.removeEventListener('pointerup', finishResize)
+      window.removeEventListener('pointercancel', finishResize)
+      document.body.classList.remove('pi-session-right-panel-resizing')
+    }
+  }, [rightPanelResizing])
+
+  const turnScrubberItems = buildTurnScrubberItems(items, streaming ? lastUserIndex : -1)
+  const jumpToTurn = useCallback((itemIndex: number) => {
+    setScrollNavigationLocked(true)
+    itemRefs.current[itemIndex]?.scrollIntoView({ block: 'start' })
+  }, [])
+  const jumpToBottom = useCallback(() => {
+    setScrollNavigationLocked(false)
+  }, [])
+
   // Derive: whether any assistant item contains a thinking block
   const hasThinking = items.some(
     item => item.kind === 'assistant' && (item as AssistantItem).blocks.some(b => b.type === 'thinking')
   )
+  const activeToolStatus = formatActiveToolStatus(inputArea)
+  const hasPendingQueue = inputArea.steeringQueue.length > 0 || inputArea.followUpQueue.length > 0
+  const inputPlaceholder = streaming ? 'steer the running turn…' : 'message…'
 
   return (
     <div
@@ -757,20 +1221,49 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
           )}
         </div>
       )}
-      <div class="pi-session-messages-wrap">
-        <div class="pi-session-messages" ref={messagesRef}>
-          {items.map((item, i) => (
-            <RenderItemView
-              key={i}
-              item={item}
-              isSticky={streaming && i === lastUserIndex}
-              expandAllThinking={expandAllThinking}
-            />
-          ))}
+      <div class="pi-session-body">
+        <div class="pi-session-messages-wrap">
+          <div class="pi-session-messages" ref={messagesRef}>
+            {items.map((item, i) => (
+              <div
+                key={i}
+                ref={el => { itemRefs.current[i] = el }}
+                class="pi-session-render-item-shell"
+              >
+                <RenderItemView
+                  item={item}
+                  isSticky={streaming && i === lastUserIndex}
+                  expandAllThinking={expandAllThinking}
+                />
+              </div>
+            ))}
+          </div>
+          <PiJumpToBottom containerRef={messagesRef} onJump={jumpToBottom} />
         </div>
-        <PiJumpToBottom containerRef={messagesRef} />
+        <button
+          type="button"
+          class="pi-session-right-panel-resize-handle"
+          aria-label="Resize right panel"
+          title="Drag to resize"
+          onPointerDown={startRightPanelResize}
+        />
+        <aside class="pi-session-right-panel" style={{ width: `${rightPanelWidth}px` }}>
+          <TurnScrubber turns={turnScrubberItems} onJump={jumpToTurn} />
+          <TaskProgressWidget task={taskProgress} />
+        </aside>
       </div>
 
+      {(activeToolStatus || hasPendingQueue) && (
+        <div class="pi-session-input-status">
+          {activeToolStatus && <span class="pi-session-active-tool-status">{activeToolStatus}</span>}
+          {inputArea.steeringQueue.length > 0 && (
+            <span class="pi-session-queue-chip">steer ×{inputArea.steeringQueue.length}: {inputArea.steeringQueue[0]}</span>
+          )}
+          {inputArea.followUpQueue.length > 0 && (
+            <span class="pi-session-queue-chip">follow-up ×{inputArea.followUpQueue.length}: {inputArea.followUpQueue[0]}</span>
+          )}
+        </div>
+      )}
       <div class="pi-session-input-bar">
         {wsState !== 'open' && (
           <span class={`pi-session-ws-state pi-session-ws-state-${wsState}`}>
@@ -794,7 +1287,7 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
           value={inputText}
           onInput={(e) => setInputText((e.target as HTMLInputElement).value)}
           onKeyDown={handleKeyDown}
-          placeholder="message…"
+          placeholder={inputPlaceholder}
           disabled={wsState !== 'open'}
         />
       </div>

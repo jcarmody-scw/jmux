@@ -36,7 +36,7 @@ type Session struct {
 	SocketPath   string   `json:"socket_path"`
 	Status       *Status  `json:"status"`
 	Resumable    bool     `json:"resumable"`
-	Slug    string   `json:"slug"`
+	Slug         string   `json:"slug"`
 	Command      []string `json:"command"`
 }
 
@@ -56,16 +56,16 @@ type Gmuxd struct {
 }
 
 // StartGmuxd starts a real gmuxd with isolated socket dir and port.
-// The binaries must be pre-built at bin/gmux and bin/gmuxd.
+// The prod binaries must be pre-built at bin/prod/gmux and bin/prod/gmuxd.
 func StartGmuxd(t *testing.T) *Gmuxd {
 	t.Helper()
 	repoRoot := findRepoRoot(t)
-	gmuxdBin := filepath.Join(repoRoot, "bin", "gmuxd")
-	gmuxBin := filepath.Join(repoRoot, "bin", "gmux")
+	gmuxdBin := filepath.Join(repoRoot, "bin", "prod", "gmuxd")
+	gmuxBin := filepath.Join(repoRoot, "bin", "prod", "gmux")
 
 	for _, bin := range []string{gmuxdBin, gmuxBin} {
 		if _, err := os.Stat(bin); err != nil {
-			t.Fatalf("binary not found at %s — run scripts/build.sh first", bin)
+			t.Fatalf("binary not found at %s — run npm run build-prod first", bin)
 		}
 	}
 
@@ -146,7 +146,9 @@ func (g *Gmuxd) Sessions() []Session {
 		g.t.Fatalf("list sessions: %v", err)
 	}
 	defer resp.Body.Close()
-	var env struct{ Data []Session `json:"data"` }
+	var env struct {
+		Data []Session `json:"data"`
+	}
 	json.NewDecoder(resp.Body).Decode(&env)
 	return env.Data
 }
@@ -298,7 +300,9 @@ func findRepoRoot(t *testing.T) string {
 func freePort(t *testing.T) int {
 	t.Helper()
 	l, err := net.Listen("tcp", "localhost:0")
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	port := l.Addr().(*net.TCPAddr).Port
 	l.Close()
 	return port

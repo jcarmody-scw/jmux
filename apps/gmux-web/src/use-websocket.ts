@@ -106,14 +106,14 @@ export function useWebSocket(opts: UseWebSocketOptions): void {
       const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
 
       // Strategy:
-      //   Live sessions:  prefetch on-disk scrollback, open WS with ?no_erase=1 so the
-      //                  snapshot does not send ESC[3J (which would wipe prefetched lines).
+      //   Live sessions:  use the WS snapshot only. This keeps one replay source
+      //                  during attach and avoids mixing on-disk extraction with
+      //                  the live terminal state.
       //   Dead sessions:  prefetch from on-disk file (ExtractBytes); WS will fail.
       //   Reconnects:     simple WS snapshot — in-memory scrollback survives reconnect.
-      const openWs = (prefetchBarrier?: Promise<void>, noErase = false) => {
+      const openWs = (prefetchBarrier?: Promise<void>) => {
         if (disposed.current || currentSessionId.current !== session.id) return
-        const params = noErase ? '?no_erase=1' : ''
-        const url = `${wsProtocol}//${location.host}/ws/${session.id}${params}`
+        const url = `${wsProtocol}//${location.host}/ws/${session.id}`
         const ws = new WebSocket(url)
         wireWs(ws, prefetchBarrier)
       }
@@ -126,11 +126,13 @@ export function useWebSocket(opts: UseWebSocketOptions): void {
       // Clear the old session's buffer immediately (termLoading overlay hides the flash).
       queueData(new TextEncoder().encode('\x1b[3J\x1b[2J\x1b[H'))
 
-      // Live and dead sessions both prefetch the on-disk scrollback file so the
-      // user can scroll back to the start of the session. Live sessions open the
-      // WS with ?no_erase=1 so the snapshot does not wipe the prefetched content.
-      // Dead sessions use a plain WS (which will fail/close immediately — that's fine).
-      // Do not cache live-session prefetch: the file is still growing.
+      if (session.alive) {
+        openWs()
+        return
+      }
+
+      // Dead sessions prefetch the on-disk scrollback file so the user can
+      // inspect completed output without a live runner.
       {
         let prefetchResolve!: () => void
         const prefetchBarrier = new Promise<void>(resolve => { prefetchResolve = resolve })
@@ -145,41 +147,28 @@ export function useWebSocket(opts: UseWebSocketOptions): void {
           }
         }
 
-        if (!session.alive) {
-          // Dead session: safe to cache (file no longer changes).
-          const cached = prefetchCache.get(prefetchSessionId)
-          if (cached !== undefined) {
-            if (cached !== null) injectPrefetch(cached)
-            prefetchResolve()
-          } else {
-            fetchScrollback(prefetchSessionId).then(result => {
-              if (disposed.current || currentSessionId.current !== prefetchSessionId) {
-                prefetchResolve(); return
-              }
-              if (result.kind === 'bytes') {
-                const extracted = result.bytes
-                prefetchCache.set(prefetchSessionId, extracted.length > 0 ? extracted : null)
-                injectPrefetch(extracted)
-              } else if (result.kind === 'empty' || result.kind === 'not-found') {
-                prefetchCache.set(prefetchSessionId, null)
-              }
-              // error: don't cache so next visit retries
-              prefetchResolve()
-            }).catch(() => prefetchResolve())
-          }
+        const cached = prefetchCache.get(prefetchSessionId)
+        if (cached !== undefined) {
+          if (cached !== null) injectPrefetch(cached)
+          prefetchResolve()
         } else {
-          // Live session: always fetch fresh (file is still growing).
           fetchScrollback(prefetchSessionId).then(result => {
             if (disposed.current || currentSessionId.current !== prefetchSessionId) {
               prefetchResolve(); return
             }
-            if (result.kind === 'bytes') injectPrefetch(result.bytes)
-            // empty/not-found/error: just open the WS with no prefetch content
+            if (result.kind === 'bytes') {
+              const extracted = result.bytes
+              prefetchCache.set(prefetchSessionId, extracted.length > 0 ? extracted : null)
+              injectPrefetch(extracted)
+            } else if (result.kind === 'empty' || result.kind === 'not-found') {
+              prefetchCache.set(prefetchSessionId, null)
+            }
+            // error: don't cache so next visit retries
             prefetchResolve()
           }).catch(() => prefetchResolve())
         }
 
-        openWs(prefetchBarrier, session.alive)
+        openWs(prefetchBarrier)
       }
 
     }

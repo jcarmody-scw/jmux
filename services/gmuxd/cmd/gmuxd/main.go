@@ -6,21 +6,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"mime"
 	"mime/multipart"
 	"net"
 	"net/http"
-	"io/fs"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"runtime/debug"
 	"sort"
 	"strconv"
-	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -36,9 +36,11 @@ import (
 	"github.com/gmuxapp/gmux/services/gmuxd/internal/conversations"
 	"github.com/gmuxapp/gmux/services/gmuxd/internal/devcontainers"
 	"github.com/gmuxapp/gmux/services/gmuxd/internal/discovery"
+	"github.com/gmuxapp/gmux/services/gmuxd/internal/gitwatcher"
 	"github.com/gmuxapp/gmux/services/gmuxd/internal/netauth"
 	"github.com/gmuxapp/gmux/services/gmuxd/internal/notify"
 	"github.com/gmuxapp/gmux/services/gmuxd/internal/peering"
+	"github.com/gmuxapp/gmux/services/gmuxd/internal/pirpc"
 	"github.com/gmuxapp/gmux/services/gmuxd/internal/presence"
 	"github.com/gmuxapp/gmux/services/gmuxd/internal/projects"
 	"github.com/gmuxapp/gmux/services/gmuxd/internal/sessionfiles"
@@ -49,8 +51,6 @@ import (
 	"github.com/gmuxapp/gmux/services/gmuxd/internal/tsdiscovery"
 	"github.com/gmuxapp/gmux/services/gmuxd/internal/unixipc"
 	"github.com/gmuxapp/gmux/services/gmuxd/internal/update"
-	"github.com/gmuxapp/gmux/services/gmuxd/internal/pirpc"
-	"github.com/gmuxapp/gmux/services/gmuxd/internal/gitwatcher"
 	"github.com/gmuxapp/gmux/services/gmuxd/internal/wsproxy"
 	"github.com/google/uuid"
 	"nhooyr.io/websocket"
@@ -69,9 +69,6 @@ var (
 )
 
 func init() {
-	if version != "dev" {
-		return
-	}
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
 		return
@@ -91,8 +88,15 @@ func init() {
 	vcsRevision = rev
 	vcsModified = modified
 	vcsTimeStr = vcsTime
+	version = resolveBuildVersion(version, rev, vcsTime)
+}
+
+func resolveBuildVersion(baseVersion, rev, vcsTime string) string {
+	if baseVersion != "dev" && baseVersion != "prod" {
+		return baseVersion
+	}
 	if rev == "" {
-		return
+		return baseVersion
 	}
 	hash := rev
 	if len(hash) > 6 {
@@ -100,13 +104,11 @@ func init() {
 	}
 	if vcsTime != "" {
 		if t, err := time.Parse(time.RFC3339, vcsTime); err == nil {
-			version = fmt.Sprintf("dev.%s.%s", t.UTC().Format("0102"), hash)
-			return
+			return fmt.Sprintf("%s.%s.%s", baseVersion, t.UTC().Format("0102"), hash)
 		}
 	}
-	version = "dev." + hash
+	return baseVersion + "." + hash
 }
-
 
 // buildTopology assembles the topology block included in /v1/health responses.
 // It is a pure function so it can be unit-tested independently of the HTTP handler.
@@ -134,10 +136,10 @@ func buildTopology(tcpAddr, stateDir, startedIn, devProxy string) map[string]any
 	}
 
 	topo := map[string]any{
-		"instance":   instance,
+		"instance":    instance,
 		"listen_port": listenPort,
-		"state_dir":  stateDir,
-		"started_in": startedIn,
+		"state_dir":   stateDir,
+		"started_in":  startedIn,
 		"vcs": map[string]any{
 			"revision": vcsRevision,
 			"modified": vcsModified,
@@ -1199,26 +1201,26 @@ func serve(stderr io.Writer) int {
 		// spawn it directly and register it in the store.
 		if a := adapters.FindAdapterByLauncherID(req.LauncherID); a != nil {
 			if sa, ok := a.(adapter.SubprocessAdapter); ok {
-			subCmd := sa.SubprocessCommand(cwd)
-			sessionID := uuid.New().String()
-			now := time.Now().UTC().Format(time.RFC3339)
-			sessions.Upsert(store.Session{
-				ID:        sessionID,
-				Kind:      a.Name(),
-				Cwd:       cwd,
-				Alive:     true,
-				Command:   subCmd,
-				CreatedAt: now,
-				StartedAt: now,
-			})
+				subCmd := sa.SubprocessCommand(cwd)
+				sessionID := uuid.New().String()
+				now := time.Now().UTC().Format(time.RFC3339)
+				sessions.Upsert(store.Session{
+					ID:        sessionID,
+					Kind:      a.Name(),
+					Cwd:       cwd,
+					Alive:     true,
+					Command:   subCmd,
+					CreatedAt: now,
+					StartedAt: now,
+				})
 				if fileMon != nil {
 					fileMon.NotifyNewSession(sessionID)
 				}
-			if err := piSDKManager.Launch(sessionID, subCmd, cwd); err != nil {
-				log.Printf("launch: pi-rpc subprocess failed: %v", err)
-				writeError(w, http.StatusInternalServerError, "launch_failed", err.Error())
-				return
-			}
+				if err := piSDKManager.Launch(sessionID, subCmd, cwd); err != nil {
+					log.Printf("launch: pi-rpc subprocess failed: %v", err)
+					writeError(w, http.StatusInternalServerError, "launch_failed", err.Error())
+					return
+				}
 				log.Printf("launch: pi-rpc session %s cwd=%s", sessionID, cwd)
 				writeJSON(w, map[string]any{
 					"ok":   true,
@@ -1572,7 +1574,7 @@ func serve(stderr io.Writer) int {
 				}
 			}
 		}
-		
+
 		// Local session: use the existing Unix socket proxy.
 		wsProxy.Handler()(w, r)
 	})
@@ -1774,6 +1776,8 @@ func serve(stderr io.Writer) int {
 		return "", fmt.Errorf("project %q has no filesystem path rule", slug)
 	}
 
+	var refreshAndBroadcastWalk func(slug, root string, includeHidden bool)
+
 	// GET /v1/fs/{slug}?path=<rel> — list a directory.
 	mux.HandleFunc("GET /v1/fs/{slug}", func(w http.ResponseWriter, r *http.Request) {
 		slug := r.PathValue("slug")
@@ -1821,6 +1825,7 @@ func serve(stderr io.Writer) int {
 			writeError(w, http.StatusInternalServerError, "mkdir_failed", err.Error())
 			return
 		}
+		refreshAndBroadcastWalk(slug, root, false)
 		writeJSON(w, map[string]any{"ok": true})
 	})
 
@@ -1858,6 +1863,7 @@ func serve(stderr io.Writer) int {
 			return
 		}
 		f.Close()
+		refreshAndBroadcastWalk(slug, root, false)
 		writeJSON(w, map[string]any{"ok": true})
 	})
 
@@ -1891,6 +1897,7 @@ func serve(stderr io.Writer) int {
 			writeError(w, http.StatusInternalServerError, "rename_failed", err.Error())
 			return
 		}
+		refreshAndBroadcastWalk(slug, root, false)
 		writeJSON(w, map[string]any{"ok": true})
 	})
 
@@ -1928,6 +1935,7 @@ func serve(stderr io.Writer) int {
 			writeError(w, http.StatusInternalServerError, "move_failed", err.Error())
 			return
 		}
+		refreshAndBroadcastWalk(slug, root, false)
 		writeJSON(w, map[string]any{"ok": true})
 	})
 
@@ -1971,6 +1979,7 @@ func serve(stderr io.Writer) int {
 			writeError(w, http.StatusInternalServerError, "delete_failed", deleteErr.Error())
 			return
 		}
+		refreshAndBroadcastWalk(slug, root, false)
 		writeJSON(w, map[string]any{"ok": true})
 	})
 
@@ -2004,6 +2013,7 @@ func serve(stderr io.Writer) int {
 				written = append(written, fh.Filename)
 			}
 		}
+		refreshAndBroadcastWalk(slug, root, false)
 		writeJSON(w, map[string]any{"ok": true, "data": map[string]any{"written": written}})
 	})
 
@@ -2137,6 +2147,7 @@ func serve(stderr io.Writer) int {
 			writeError(w, http.StatusInternalServerError, "write_failed", err.Error())
 			return
 		}
+		refreshAndBroadcastWalk(slug, root, false)
 		writeJSON(w, map[string]any{"ok": true})
 	})
 
@@ -2243,24 +2254,19 @@ func serve(stderr io.Writer) int {
 	// ── Walk snapshot cache ──────────────────────────────────────────────────
 	//
 	// walkSnapshotCache maintains a per-slug full-walk result so that
-	// delta requests (walk?since=<version>) can be answered instantly
-	// without hitting the disk. A background goroutine refreshes each
-	// snapshot every 30 s. Version is a monotonically increasing int64.
-	type walkSnapshot struct {
-		paths        map[string]struct{}
-		version      int64
-		deltaAdded   []string // paths added vs previous snapshot
-		deltaRemoved []string // paths removed vs previous snapshot
-	}
+	// websocket streams and legacy delta requests can share one snapshot.
+	// A background goroutine refreshes each snapshot every 30 s. Version is a
+	// monotonically increasing int64.
 	var walkSnapMu sync.RWMutex
 	walkSnaps := map[string]*walkSnapshot{} // keyed by slug
+	fileTreeStreams := newFileTreeHub()
 
 	// refreshWalkSnapshot does a full (uncapped) walk, computes the delta vs the
-	// previous snapshot, and atomically updates the cache.
-	refreshWalkSnapshot := func(slug, root string, includeHidden bool) {
+	// previous snapshot, atomically updates the cache, and returns the new snapshot.
+	refreshWalkSnapshot := func(slug, root string, includeHidden bool) *walkSnapshot {
 		paths, err := walkProjectPaths(root, includeHidden, true)
 		if err != nil {
-			return
+			return nil
 		}
 		newSet := make(map[string]struct{}, len(paths))
 		for _, p := range paths {
@@ -2286,15 +2292,42 @@ func serve(stderr io.Writer) int {
 			added = []string{}
 			removed = []string{}
 		}
-		if added == nil { added = []string{} }
-		if removed == nil { removed = []string{} }
-		walkSnaps[slug] = &walkSnapshot{
+		if added == nil {
+			added = []string{}
+		}
+		if removed == nil {
+			removed = []string{}
+		}
+		snap := &walkSnapshot{
 			paths:        newSet,
 			version:      version,
 			deltaAdded:   added,
 			deltaRemoved: removed,
 		}
+		walkSnaps[slug] = snap
 		walkSnapMu.Unlock()
+		return snap
+	}
+
+	refreshAndBroadcastWalk = func(slug, root string, includeHidden bool) {
+		if msg := fileTreeDeltaMessage(refreshWalkSnapshot(slug, root, includeHidden)); msg != nil {
+			fileTreeStreams.broadcast(slug, *msg)
+		}
+	}
+
+	gitStatusStreamMessage := func(ctx context.Context, root string) fileTreeStreamMessage {
+		shortstatCmd := exec.CommandContext(ctx, "git", "-C", root, "diff", "HEAD", "--shortstat")
+		shortstat, _ := shortstatCmd.Output()
+		files, insertions, deletions := parseGitShortstat(string(shortstat))
+		statusCmd := exec.CommandContext(ctx, "git", "-C", root, "status", "--porcelain=v1", "-uno")
+		status, _ := statusCmd.Output()
+		return fileTreeStreamMessage{
+			Type:       "git-status",
+			Files:      files,
+			Insertions: insertions,
+			Deletions:  deletions,
+			Entries:    parseGitPorcelain(string(status)),
+		}
 	}
 
 	// Background goroutine: refresh all cached snapshots every 30 s.
@@ -2313,10 +2346,70 @@ func serve(stderr io.Writer) int {
 				if err != nil {
 					continue
 				}
-				refreshWalkSnapshot(s, root, false)
+				refreshAndBroadcastWalk(s, root, false)
 			}
 		}
 	}()
+
+	// GET /v1/fs/{slug}/stream — websocket stream for file-tree deltas and git status.
+	mux.HandleFunc("GET /v1/fs/{slug}/stream", func(w http.ResponseWriter, r *http.Request) {
+		slug := r.PathValue("slug")
+		root, err := resolveFSProjectRoot(slug)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "not_found", err.Error())
+			return
+		}
+		includeHidden := r.URL.Query().Get("include_hidden") == "true"
+
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+			InsecureSkipVerify: true,
+		})
+		if err != nil {
+			log.Printf("filetree stream: accept: %v", err)
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "")
+
+		ctx := r.Context()
+		snap := refreshWalkSnapshot(slug, root, includeHidden)
+		if snap != nil {
+			if err := wsWriteJSON(ctx, conn, fileTreeStreamMessage{Type: "hello", Version: snap.version}); err != nil {
+				return
+			}
+		}
+		if err := wsWriteJSON(ctx, conn, gitStatusStreamMessage(ctx, root)); err != nil {
+			return
+		}
+
+		fileEvents, cancelFileEvents := fileTreeStreams.subscribe(slug)
+		defer cancelFileEvents()
+		storeEvents, cancelStoreEvents := sessions.Subscribe()
+		defer cancelStoreEvents()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case msg, ok := <-fileEvents:
+				if !ok {
+					return
+				}
+				if err := wsWriteJSON(ctx, conn, msg); err != nil {
+					return
+				}
+			case ev, ok := <-storeEvents:
+				if !ok {
+					return
+				}
+				if ev.Type != "git-status" || ev.ID != slug {
+					continue
+				}
+				if err := wsWriteJSON(ctx, conn, gitStatusStreamMessage(ctx, root)); err != nil {
+					return
+				}
+			}
+		}
+	})
 
 	// GET /v1/fs/{slug}/walk
 	//   default          → depth-3 JSON array (fast initial load)
@@ -2365,7 +2458,7 @@ func serve(stderr io.Writer) int {
 			// Client too far behind — tell it to reset.
 			writeJSON(w, map[string]any{"ok": true, "data": map[string]any{"reset": true}})
 			return
-	}
+		}
 
 		// ── full streaming mode: walk?full=true ──
 		// Walk the full tree, streaming each path as NDJSON while simultaneously
@@ -2383,44 +2476,64 @@ func serve(stderr io.Writer) int {
 			walkErr2 := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
 				if walkErr != nil {
 					if os.IsPermission(walkErr) {
-						if d != nil && d.IsDir() { return filepath.SkipDir }
+						if d != nil && d.IsDir() {
+							return filepath.SkipDir
+						}
 						return nil
 					}
 					return walkErr
 				}
 				rel, relErr := filepath.Rel(root, path)
-				if relErr != nil || rel == "." { return nil }
+				if relErr != nil || rel == "." {
+					return nil
+				}
 				if !includeHidden && strings.HasPrefix(d.Name(), ".") {
-					if d.IsDir() { return filepath.SkipDir }
+					if d.IsDir() {
+						return filepath.SkipDir
+					}
 					return nil
 				}
 				relSlash := filepath.ToSlash(rel)
-				if d.IsDir() { relSlash += "/" }
+				if d.IsDir() {
+					relSlash += "/"
+				}
 				collected = append(collected, relSlash)
 				fmt.Fprintf(w, "%s\n", relSlash)
 				n++
-				if canFlush && n%500 == 0 { flusher.Flush() }
+				if canFlush && n%500 == 0 {
+					flusher.Flush()
+				}
 				return nil
 			})
 			_ = walkErr2
 			// Atomically update the snapshot from the paths we just collected.
 			// This guarantees the version trailer matches the snapshot.
 			newSet := make(map[string]struct{}, len(collected))
-			for _, p := range collected { newSet[p] = struct{}{} }
+			for _, p := range collected {
+				newSet[p] = struct{}{}
+			}
 			walkSnapMu.Lock()
 			var newVersion int64 = 1
 			var added, removed []string
 			if prev, ok := walkSnaps[slug]; ok {
 				newVersion = prev.version + 1
 				for p := range newSet {
-					if _, exists := prev.paths[p]; !exists { added = append(added, p) }
+					if _, exists := prev.paths[p]; !exists {
+						added = append(added, p)
+					}
 				}
 				for p := range prev.paths {
-					if _, exists := newSet[p]; !exists { removed = append(removed, p) }
+					if _, exists := newSet[p]; !exists {
+						removed = append(removed, p)
+					}
 				}
 			}
-			if added == nil { added = []string{} }
-			if removed == nil { removed = []string{} }
+			if added == nil {
+				added = []string{}
+			}
+			if removed == nil {
+				removed = []string{}
+			}
 			walkSnaps[slug] = &walkSnapshot{
 				paths:        newSet,
 				version:      newVersion,
@@ -2429,7 +2542,9 @@ func serve(stderr io.Writer) int {
 			}
 			walkSnapMu.Unlock()
 			fmt.Fprintf(w, "{\"version\":%d}\n", newVersion)
-			if canFlush { flusher.Flush() }
+			if canFlush {
+				flusher.Flush()
+			}
 			return
 		}
 
@@ -3301,11 +3416,11 @@ func walkProjectPaths(root string, includeHidden bool, full bool) ([]string, err
 	bulkDirs := map[string]bool{
 		"node_modules": true,
 		".pnpm":        true,
-		".yarn":         true,
-		"vendor":        true,
-		"__pycache__":   true,
-		".venv":         true,
-		"venv":          true,
+		".yarn":        true,
+		"vendor":       true,
+		"__pycache__":  true,
+		".venv":        true,
+		"venv":         true,
 	}
 	var paths []string
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {

@@ -78,6 +78,29 @@ func (c *eventCollector) snapshot() []store.Event {
 	return out
 }
 
+func waitForGitStatusEvent(t *testing.T, col *eventCollector, timeout time.Duration) store.Event {
+	t.Helper()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		evs := col.snapshot()
+		if len(evs) > 0 {
+			return evs[0]
+		}
+
+		select {
+		case <-timer.C:
+			t.Fatalf("timeout waiting %s for git-status event", timeout)
+		case <-ticker.C:
+		}
+	}
+}
+
 // TestGitWatcher_BroadcastsOnIndexChange verifies that touching .git/index
 // after staging a file causes a git-status SSE event to be broadcast within
 // the debounce window plus a small margin.
@@ -108,33 +131,22 @@ func TestGitWatcher_BroadcastsOnIndexChange(t *testing.T) {
 		t.Fatalf("git add: %v\n%s", err, out)
 	}
 
-	// Wait up to 1s for an event (debounce=150ms).
-	deadline := time.After(1 * time.Second)
-	for {
-		select {
-		case <-deadline:
-			t.Fatal("timeout: no git-status event received")
-		case <-time.After(50 * time.Millisecond):
-			evs := col.snapshot()
-			if len(evs) > 0 {
-				// Verify slug and payload.
-				ev := evs[0]
-				if ev.Type != "git-status" {
-					t.Fatalf("unexpected event type: %s", ev.Type)
-				}
-				if ev.ID != "myslug" {
-					t.Fatalf("expected slug myslug, got %s", ev.ID)
-				}
-				var payload gitwatcher.GitStatusPayload
-				if err := json.Unmarshal(ev.Payload, &payload); err != nil {
-					t.Fatalf("unmarshal payload: %v", err)
-				}
-				if payload.Slug != "myslug" {
-					t.Fatalf("payload.Slug = %q, want myslug", payload.Slug)
-				}
-				return
-			}
-		}
+	// Wait for an event long enough to tolerate full-suite load.
+	ev := waitForGitStatusEvent(t, col, 5*time.Second)
+
+	// Verify slug and payload.
+	if ev.Type != "git-status" {
+		t.Fatalf("unexpected event type: %s", ev.Type)
+	}
+	if ev.ID != "myslug" {
+		t.Fatalf("expected slug myslug, got %s", ev.ID)
+	}
+	var payload gitwatcher.GitStatusPayload
+	if err := json.Unmarshal(ev.Payload, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if payload.Slug != "myslug" {
+		t.Fatalf("payload.Slug = %q, want myslug", payload.Slug)
 	}
 }
 
@@ -208,25 +220,14 @@ func TestGitWatcher_PayloadContainsShortstat(t *testing.T) {
 		t.Fatalf("git add: %v\n%s", err, out)
 	}
 
-	deadline := time.After(1 * time.Second)
-	for {
-		select {
-		case <-deadline:
-			t.Fatal("timeout waiting for git-status event")
-		case <-time.After(50 * time.Millisecond):
-			evs := col.snapshot()
-			if len(evs) == 0 {
-				continue
-			}
-			var payload gitwatcher.GitStatusPayload
-			if err := json.Unmarshal(evs[0].Payload, &payload); err != nil {
-				t.Fatalf("unmarshal: %v", err)
-			}
-			if payload.Files == 0 {
-				t.Fatalf("expected Files > 0, got %+v", payload)
-			}
-			return
-		}
+	ev := waitForGitStatusEvent(t, col, 5*time.Second)
+
+	var payload gitwatcher.GitStatusPayload
+	if err := json.Unmarshal(ev.Payload, &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if payload.Files == 0 {
+		t.Fatalf("expected Files > 0, got %+v", payload)
 	}
 }
 
@@ -265,27 +266,16 @@ func TestGitWatcher_NoUnflagUsed(t *testing.T) {
 		t.Fatalf("git add: %v\n%s", err, out)
 	}
 
-	deadline := time.After(1 * time.Second)
-	for {
-		select {
-		case <-deadline:
-			t.Fatal("timeout waiting for git-status event")
-		case <-time.After(50 * time.Millisecond):
-			evs := col.snapshot()
-			if len(evs) == 0 {
-				continue
-			}
-			var payload gitwatcher.GitStatusPayload
-			if err := json.Unmarshal(evs[0].Payload, &payload); err != nil {
-				t.Fatalf("unmarshal: %v", err)
-			}
-			// Without -u, untracked.txt should NOT appear in entries.
-			for _, e := range payload.Entries {
-				if e.Status == "untracked" {
-					t.Fatalf("expected no untracked entries (no -u flag), got: %+v", payload.Entries)
-				}
-			}
-			return
+	ev := waitForGitStatusEvent(t, col, 5*time.Second)
+
+	var payload gitwatcher.GitStatusPayload
+	if err := json.Unmarshal(ev.Payload, &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	// Without -u, untracked.txt should NOT appear in entries.
+	for _, e := range payload.Entries {
+		if e.Status == "untracked" {
+			t.Fatalf("expected no untracked entries (no -u flag), got: %+v", payload.Entries)
 		}
 	}
 }

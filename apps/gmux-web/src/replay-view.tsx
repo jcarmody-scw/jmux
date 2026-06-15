@@ -4,7 +4,6 @@ import type { Session } from './types'
 import type { ResolvedTerminalOptions } from './settings-schema'
 import { fetchScrollback, type ScrollbackResult } from './replay-fetch'
 import { JumpToBottom } from './jump-to-bottom'
-import { getGhosttyCore } from './terminal-init'
 import { applyWtermTheme } from './terminal-theme'
 
 // gmuxd caps scrollback at 1 MiB × 2 files (~2 MiB max). Bump scrollback
@@ -49,11 +48,9 @@ export function ReplayView({
 
     const run = async () => {
       const { WTerm } = await import('@wterm/dom')
-      const core = await getGhosttyCore()
       if (cancelled || !containerRef.current) return
 
       const t = new WTerm(containerRef.current, {
-        core,
         autoResize: true,
         cursorBlink: false,
       })

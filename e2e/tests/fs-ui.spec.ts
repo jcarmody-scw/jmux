@@ -108,6 +108,8 @@ test.describe('new file flow', () => {
     await page.locator('.ft-header-btn[title="New file"]').click()
     // Wait for the inline input to actually appear before reading initialBoxCount.
     await expect(page.getByRole('textbox')).toHaveCount(beforeCount + 1, { timeout: 3_000 })
+    const renameInput = page.locator('[data-item-rename-input]')
+    await renameInput.click()
     const initialBoxCount = await page.getByRole('textbox').count()
     await page.keyboard.press('Escape')
     // Inline input gone.

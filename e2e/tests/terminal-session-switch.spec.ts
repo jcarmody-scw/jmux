@@ -5,18 +5,15 @@ import { openApp, spawnTestSession } from '../helpers'
  * Regression test for: "switching gmux sessions causes WS connection to
  * take ages to re-establish."
  *
- * Original root cause (a774dc5): prefetch serialised the WS handshake behind
- * a large HTTP download. Fix: run prefetch and WS in parallel.
- *
- * Current architecture: live sessions prefetch on-disk scrollback (so the user
- * can scroll back to session start) AND open the WS immediately in parallel.
- * The WS must open quickly; the scrollback prefetch HTTP request is expected.
+ * The live-session path no longer performs scrollback prefetch before or during
+ * the WS handshake. The browser should switch sessions by opening the WS
+ * immediately, without issuing a scrollback HTTP request for live sessions.
  */
 
 const WS_OPEN_DEADLINE_MS = 1_500
 
 test.describe('session switch — WS connects immediately for live sessions', () => {
-  test('WS opens quickly even with scrollback prefetch running', async ({ page }) => {
+  test('WS opens quickly without live-session scrollback prefetch', async ({ page }) => {
     const fromSession = await spawnTestSession(
       ['bash', '-c', 'echo FROM-SESSION-READY; sleep 60'],
       { cwdName: `switch-from-${Date.now()}` },
@@ -38,9 +35,8 @@ test.describe('session switch — WS connects immediately for live sessions', ()
       await page.locator('.terminal-shell .terminal-container.wterm.focused').waitFor({ state: 'visible', timeout: 5_000 })
       await page.waitForTimeout(1_500)
 
-      // Track whether the scrollback prefetch endpoint is called.
-      // Live sessions now prefetch on-disk scrollback so the user can scroll
-      // back to session start — the request is expected.
+      // Track whether the scrollback prefetch endpoint is called. Live sessions
+      // should use only the WS snapshot path.
       const scrollbackUrl = `/v1/sessions/${encodeURIComponent(toSession.id)}/scrollback`
       let prefetchRequested = false
       await page.route(`**${scrollbackUrl}*`, async (route) => {
@@ -73,7 +69,7 @@ test.describe('session switch — WS connects immediately for live sessions', ()
         return navigate(id) === true
       }, toSession.id, { timeout: 10_000 })
 
-      // WS must open quickly — prefetch runs in parallel, not blocking the WS handshake.
+      // WS must open quickly without waiting for a scrollback prefetch.
       const wsOpenAt = await page.waitForFunction(
         () => (window as any).__gmuxWsOpenAt as number | null,
         null,
@@ -91,9 +87,8 @@ test.describe('session switch — WS connects immediately for live sessions', ()
       await expect(page.locator('.terminal-loading')).not.toBeVisible({ timeout: 5_000 })
       await expect(page.locator('.terminal-shell .terminal-container.wterm.focused')).toBeVisible()
 
-      // Live sessions DO request the scrollback prefetch (to allow scroll-to-start).
-      // The WS opens in parallel — prefetch must not serialise the handshake.
-      expect(prefetchRequested, 'live sessions request the scrollback prefetch').toBe(true)
+      // Live sessions should not request scrollback prefetch.
+      expect(prefetchRequested, 'live sessions skip scrollback prefetch').toBe(false)
     } finally {
       fromSession.kill()
       toSession.kill()

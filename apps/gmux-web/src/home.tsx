@@ -89,6 +89,7 @@ export function Home() {
             class="home-footer-update"
             href="https://gmux.app/changelog/"
             target="_blank"
+            rel="noopener"
           >
             v{healthVal.update_available} available
           </a>

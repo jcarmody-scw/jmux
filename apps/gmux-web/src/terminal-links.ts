@@ -56,8 +56,8 @@ export function handleTerminalLinkClick(ev: MouseEvent): boolean {
 
   // Scan for URL matches and check if the click falls inside one.
   URL_PATTERN.lastIndex = 0
-  let match: RegExpExecArray | null
-  while ((match = URL_PATTERN.exec(rowText)) !== null) {
+  let match = URL_PATTERN.exec(rowText)
+  while (match !== null) {
     const start = match.index
     const end = start + match[0].length
     if (absoluteOffset >= start && absoluteOffset < end) {
@@ -67,6 +67,7 @@ export function handleTerminalLinkClick(ev: MouseEvent): boolean {
       window.open(url, '_blank', 'noopener,noreferrer')
       return true
     }
+    match = URL_PATTERN.exec(rowText)
   }
 
   return false
@@ -103,10 +104,11 @@ function getRangeAtPoint(x: number, y: number): Range | null {
 function absoluteTextOffset(root: Element, targetNode: Node, targetOffset: number): number {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
   let accumulated = 0
-  let node: Node | null
-  while ((node = walker.nextNode()) !== null) {
+  let node = walker.nextNode()
+  while (node !== null) {
     if (node === targetNode) return accumulated + targetOffset
     accumulated += node.textContent?.length ?? 0
+    node = walker.nextNode()
   }
   return -1
 }

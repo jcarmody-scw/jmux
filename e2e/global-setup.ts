@@ -7,11 +7,28 @@ import type { FullConfig } from '@playwright/test'
 import { SMOKE_FIXTURES, writeFakeSession } from './fixtures'
 
 const ROOT = path.resolve(__dirname, '..')
-const GMUXD = path.join(ROOT, 'bin', 'gmuxd')
-const GMUX = path.join(ROOT, 'bin', 'gmux')
 
 // Shared state file so teardown can find the PIDs and tmpDir.
 const STATE_FILE = path.join(os.tmpdir(), 'gmux-e2e-state.json')
+
+function shellQuote(value: string): string {
+  return JSON.stringify(value)
+}
+
+function buildE2eBinaries(binDir: string): { gmux: string; gmuxd: string } {
+  fs.mkdirSync(binDir, { recursive: true })
+  const gmux = path.join(binDir, 'gmux')
+  const gmuxd = path.join(binDir, 'gmuxd')
+  execSync(`go build -o ${shellQuote(gmux)} ./cmd/gmux`, {
+    cwd: path.join(ROOT, 'cli', 'gmux'),
+    stdio: 'inherit',
+  })
+  execSync(`go build -o ${shellQuote(gmuxd)} ./cmd/gmuxd`, {
+    cwd: path.join(ROOT, 'services', 'gmuxd'),
+    stdio: 'inherit',
+  })
+  return { gmux, gmuxd }
+}
 
 /** Find a free port by briefly binding to :0. */
 async function freePort(): Promise<number> {
@@ -63,18 +80,23 @@ async function waitForSession(port: number, token: string, expectCwd: string, ti
 }
 
 export default async function globalSetup(_config: FullConfig) {
-  // Build frontend + Go binaries so the embedded assets are always in sync
-  // with the current source.  Runs unconditionally — both Vite and `go build`
-  // are incremental, so a no-op rebuild finishes in seconds.
-  //
-  // Set E2E_SKIP_BUILD=1 to skip (e.g. in CI where builds are a separate job).
-  if (!process.env.E2E_SKIP_BUILD) {
-    console.log('\n[e2e] building gmux (E2E_SKIP_BUILD=1 to skip)…')
-    execSync('./scripts/build.sh', { cwd: ROOT, stdio: 'inherit' })
-  }
-
   const port = await freePort()
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gmux-e2e-'))
+  const e2eBinDir = path.join(tmpDir, 'bin')
+
+  // Build frontend + embedded assets through the prod build path, then build
+  // fresh test binaries into tmpDir. The temp binaries prevent stale cross-OS
+  // artifacts in repo bin/ from leaking into E2E runs.
+  //
+  // Set E2E_SKIP_BUILD=1 to skip the frontend/embed step, for example in CI
+  // where builds are a separate job. The Go test binaries are always rebuilt
+  // for the current GOOS/GOARCH because they are cheap and environment-specific.
+  if (!process.env.E2E_SKIP_BUILD) {
+    console.log('\n[e2e] building gmux via npm run build-prod (E2E_SKIP_BUILD=1 to skip frontend/embed)…')
+    execSync('npm run build-prod', { cwd: ROOT, stdio: 'inherit' })
+  }
+  const { gmux: GMUX, gmuxd: GMUXD } = buildE2eBinaries(e2eBinDir)
+
   const socketDir = path.join(tmpDir, 'sockets')
   const configDir = path.join(tmpDir, 'config')
   const stateDir = path.join(tmpDir, 'state')
@@ -225,6 +247,8 @@ export default async function globalSetup(_config: FullConfig) {
     sessionId,
     port,
     token: testToken,
+    gmuxBin: GMUX,
+    gmuxdBin: GMUXD,
   }))
 
   // Playwright reads baseURL from config, but config is evaluated before
@@ -247,4 +271,5 @@ export default async function globalSetup(_config: FullConfig) {
   process.env.GMUX_TEST_SOCKET_DIR = socketDir
   process.env.GMUX_TEST_CONFIG_HOME = configDir
   process.env.GMUX_TEST_STATE_HOME = stateDir
+  process.env.GMUX_TEST_GMUX_BIN = GMUX
 }
