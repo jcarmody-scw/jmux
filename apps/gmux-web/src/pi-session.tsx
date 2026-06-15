@@ -129,6 +129,7 @@ export interface TaskProgressStep {
 }
 
 export interface TaskProgress {
+  id?: string
   title: string
   status: string
   steps: TaskProgressStep[]
@@ -254,8 +255,45 @@ export function buildTaskProgressSummary(task: TaskProgress): TaskProgressSummar
   return { done, total, label: `${done} / ${total}` }
 }
 
+function isTaskStepStatus(value: unknown): value is TaskStepStatus {
+  return value === 'PENDING' || value === 'IN_PROGRESS' || value === 'DONE'
+}
+
+function taskProgressFromWidgetLines(lines: unknown): TaskProgress | null | undefined {
+  if (!Array.isArray(lines)) return undefined
+  const raw = typeof lines[0] === 'string' ? lines[0] : ''
+  if (!raw) return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return undefined
+  }
+  const envelope = parsed as { type?: unknown; task?: unknown }
+  if (envelope.type !== 'captain_task_progress' || !envelope.task || typeof envelope.task !== 'object') return undefined
+  const task = envelope.task as { id?: unknown; title?: unknown; status?: unknown; steps?: unknown }
+  if (typeof task.title !== 'string' || typeof task.status !== 'string') return undefined
+  const steps = Array.isArray(task.steps)
+    ? task.steps.flatMap(step => {
+      if (!step || typeof step !== 'object') return []
+      const typed = step as { id?: unknown; title?: unknown; status?: unknown }
+      if (typeof typed.id !== 'string' || typeof typed.title !== 'string' || !isTaskStepStatus(typed.status)) return []
+      return [{ id: typed.id, title: typed.title, status: typed.status }]
+    })
+    : []
+  return {
+    ...(typeof task.id === 'string' ? { id: task.id } : {}),
+    title: task.title,
+    status: task.status,
+    steps,
+  }
+}
+
 export function taskProgressFromExtensionEvent(ev: Record<string, unknown>): TaskProgress | null | undefined {
   if (ev.type !== 'extension_ui_request') return undefined
+  if (ev.method === 'setWidget' && ev.widgetKey === 'captain-task-progress') {
+    return taskProgressFromWidgetLines(ev.widgetLines)
+  }
   if (ev.method !== 'setStatus' || ev.statusKey !== 'captain-task') return undefined
   const statusText = typeof ev.statusText === 'string' ? ev.statusText.trim() : ''
   if (!statusText) return null

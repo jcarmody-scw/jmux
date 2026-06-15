@@ -94,4 +94,32 @@ describe('s-21 task progress helpers', () => {
       statusText: 't-1720',
     })).toEqual({ title: 't-1720', status: 'IN_PROGRESS', steps: [] })
   })
+
+  it('extracts task progress from captain task progress widget events', () => {
+    expect(taskProgressFromExtensionEvent({
+      type: 'extension_ui_request',
+      method: 'setWidget',
+      widgetKey: 'captain-task-progress',
+      widgetLines: [JSON.stringify({
+        type: 'captain_task_progress',
+        task: {
+          id: 't-1720',
+          title: 'pi rpc right panel',
+          status: 'IN_PROGRESS',
+          steps: [
+            { id: 's1', title: 'Plan', status: 'DONE' },
+            { id: 's2', title: 'Implement', status: 'IN_PROGRESS' },
+          ],
+        },
+      })],
+    })).toEqual({
+      id: 't-1720',
+      title: 'pi rpc right panel',
+      status: 'IN_PROGRESS',
+      steps: [
+        { id: 's1', title: 'Plan', status: 'DONE' },
+        { id: 's2', title: 'Implement', status: 'IN_PROGRESS' },
+      ],
+    })
+  })
 })
