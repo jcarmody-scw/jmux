@@ -516,6 +516,45 @@ body {
   color: var(--text-secondary);
 }
 
+/* Pi-rpc state badges in sidebar session items */
+.session-pi-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-family: 'Fira Code', monospace;
+  padding: 1px 5px;
+  border-radius: 3px;
+  line-height: 1.4;
+  font-weight: 500;
+}
+
+.session-pi-badge-compact {
+  background: color-mix(in srgb, var(--status-working, #d4a027) 18%, transparent);
+  color: var(--status-working, #d4a027);
+  animation: subtle-pulse 1.5s ease-in-out infinite;
+}
+
+.session-pi-badge-compact-done {
+  background: color-mix(in srgb, var(--text-muted) 12%, transparent);
+  color: var(--text-muted);
+}
+
+.session-pi-badge-compact-aborted {
+  background: color-mix(in srgb, var(--status-error, #e05252) 15%, transparent);
+  color: var(--status-error, #e05252);
+}
+
+.session-pi-badge-retry {
+  background: color-mix(in srgb, var(--status-working, #d4a027) 18%, transparent);
+  color: var(--status-working, #d4a027);
+  animation: subtle-pulse 1s ease-in-out infinite;
+}
+
+.session-pi-badge-retry-fail {
+  background: color-mix(in srgb, var(--status-error, #e05252) 15%, transparent);
+  color: var(--status-error, #e05252);
+}
+
 @keyframes subtle-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.35; }
@@ -3473,6 +3512,30 @@ a.home-host-link:hover {
 
 .pi-session-expand-thinking:hover {
   opacity: 1;
+}
+
+/* Compaction and retry state badges in the session header */
+.pi-session-header-badge {
+  display: inline-flex;
+  align-items: center;
+  font-family: 'Fira Code', monospace;
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 3px;
+  line-height: 1.5;
+  font-weight: 500;
+}
+
+.pi-session-header-badge-compact {
+  background: color-mix(in srgb, var(--status-working, #d4a027) 18%, transparent);
+  color: var(--status-working, #d4a027);
+  animation: subtle-pulse 1.5s ease-in-out infinite;
+}
+
+.pi-session-header-badge-retry {
+  background: color-mix(in srgb, var(--status-working, #d4a027) 18%, transparent);
+  color: var(--status-working, #d4a027);
+  animation: subtle-pulse 1s ease-in-out infinite;
 }
 
 /* Tool block */

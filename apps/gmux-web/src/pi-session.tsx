@@ -3,6 +3,7 @@
 import { type Session } from './types'
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks'
 import type { RefObject } from 'preact'
+import { updatePiSessionBadges } from './store'
 
 // ---------------------------------------------------------------------------
 // Content block types (mirroring SDK AgentMessage content)
@@ -798,6 +799,7 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
   const [expandAllThinking, setExpandAllThinking] = useState(false)
   const [commandNames, setCommandNames] = useState<Set<string> | null>(null)
   const [inputArea, setInputArea] = useState<InputAreaState>(initialInputAreaState)
+  const [piHeaderState, setPiHeaderState] = useState<PiHeaderState>(initialPiHeaderState)
 
   const wsRef = useRef<WebSocket | null>(null)
   const retryCountRef = useRef(0)
@@ -847,6 +849,21 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
     setItems(prev => reduceItems(prev, ev))
 
     setInputArea(prev => reduceInputAreaState(prev, ev))
+
+    // Header state (compaction / retry badges)
+    setPiHeaderState(prev => {
+      const next = reducePiHeaderState(prev, ev)
+      if (next !== prev) {
+        updatePiSessionBadges(session.id, {
+          compacting: next.compacting,
+          retrying: next.retrying,
+          lastCompactionResult: next.lastCompactionResult,
+          lastRetryResult: next.lastRetryResult,
+        })
+      }
+      return next
+    })
+
     // Streaming state management (not captured by reduceItems)
     switch (ev.type) {
       case 'agent_start': {
@@ -862,7 +879,7 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
         break
       }
     }
-  }, [])
+  }, [session.id])
 
   const connect = useCallback(() => {
     if (wsRef.current) {
@@ -972,19 +989,26 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
   const activeToolStatus = formatActiveToolStatus(inputArea)
   const hasPendingQueue = inputArea.steeringQueue.length > 0 || inputArea.followUpQueue.length > 0
   const inputPlaceholder = streaming ? 'steer the running turn…' : 'message…'
+  const headerBadges = formatPiHeaderBadges(piHeaderState)
 
   return (
     <div
       class="pi-session"
       style={{ display: isActive ? 'flex' : 'none' }}
     >
-      {(sessionInfo || hasThinking) && (
+      {(sessionInfo || hasThinking || headerBadges.length > 0) && (
         <div class="pi-session-header">
           {sessionInfo && (
             <span class="pi-session-model-badge">
               {sessionInfo.model}{sessionInfo.thinkingLevel ? ` · ${sessionInfo.thinkingLevel}` : ''}
             </span>
           )}
+          {headerBadges.map(badge => {
+            const cls = badge.startsWith('retry')
+              ? 'pi-session-header-badge pi-session-header-badge-retry'
+              : 'pi-session-header-badge pi-session-header-badge-compact'
+            return <span key={badge} class={cls}>{badge}</span>
+          })}
           {hasThinking && (
             <button
               class="pi-session-expand-thinking"
@@ -1060,4 +1084,89 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
 /** Returns true for sessions driven by the pi-rpc subprocess adapter. */
 export function isPiRPCSession(session: { kind: string }): boolean {
   return session.kind === 'pi-rpc' || session.kind === 'pi-rpc-sbx'
+}
+
+// ---------------------------------------------------------------------------
+// s-22: Session header state — compaction and retry tracking
+// ---------------------------------------------------------------------------
+
+export interface PiHeaderState {
+  compacting: boolean
+  retrying: boolean
+  retryAttempt: number | null
+  retryMax: number | null
+  lastCompactionResult: 'done' | 'aborted' | null
+  lastRetryResult: 'success' | 'failed' | null
+}
+
+export const initialPiHeaderState: PiHeaderState = {
+  compacting: false,
+  retrying: false,
+  retryAttempt: null,
+  retryMax: null,
+  lastCompactionResult: null,
+  lastRetryResult: null,
+}
+
+export function reducePiHeaderState(
+  state: PiHeaderState,
+  ev: Record<string, unknown>,
+): PiHeaderState {
+  switch (ev.type) {
+    case 'compaction_start':
+      return { ...state, compacting: true, lastCompactionResult: null }
+    case 'compaction_end':
+      return {
+        ...state,
+        compacting: false,
+        lastCompactionResult: ev.aborted ? 'aborted' : 'done',
+      }
+    case 'auto_retry_start':
+      return {
+        ...state,
+        retrying: true,
+        retryAttempt: typeof ev.attempt === 'number' ? ev.attempt : null,
+        retryMax: typeof ev.maxAttempts === 'number' ? ev.maxAttempts : null,
+        lastRetryResult: null,
+      }
+    case 'auto_retry_end':
+      return {
+        ...state,
+        retrying: false,
+        lastRetryResult: ev.success ? 'success' : 'failed',
+      }
+    default:
+      return state
+  }
+}
+
+/**
+ * Derive an array of short badge strings from a PiHeaderState.
+ * Returns [] when there is nothing notable to show.
+ */
+export function formatPiHeaderBadges(state: PiHeaderState): string[] {
+  const badges: string[] = []
+
+  // Compaction badge
+  if (state.compacting) {
+    badges.push('compacting…')
+  } else if (state.lastCompactionResult === 'done') {
+    badges.push('compaction done')
+  } else if (state.lastCompactionResult === 'aborted') {
+    badges.push('compaction aborted')
+  }
+
+  // Retry badge
+  if (state.retrying) {
+    const suffix = (state.retryAttempt !== null && state.retryMax !== null)
+      ? ` ${state.retryAttempt}/${state.retryMax}`
+      : ''
+    badges.push(`retry${suffix}`)
+  } else if (state.lastRetryResult === 'success') {
+    badges.push('retry ok')
+  } else if (state.lastRetryResult === 'failed') {
+    badges.push('retry failed')
+  }
+
+  return badges
 }

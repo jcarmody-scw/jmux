@@ -15,6 +15,7 @@ import {
   reorderSessions, view,
   openMarkdownTabs, closeMarkdownTab,
   openImageTabs, closeImageTab,
+  piSessionBadges,
   type MarkdownTab,
   type ImageTab,
   type DotState,
@@ -134,6 +135,7 @@ function SessionItem({
   // or activity for one session only re-render that session's item.
   const ds = sessionDotStates.value.get(session.id)
   const act = activityMap.value.get(session.id)
+  const piBadge = piSessionBadges.value.get(session.id)
   const rawFromSignals: DotState =
     session.alive && ds?.status?.error   ? 'error'
     : session.alive && ds?.status?.working ? 'working'
@@ -211,9 +213,14 @@ function SessionItem({
           <span class="session-env-icon" aria-label={sessionEnvironmentLabel(session.kind)}>{sessionEnvironmentIcon(session.kind)}</span>
           <span class="session-title">{session.title}</span>
         </div>
-        {session.status?.label && (
+        {(session.status?.label || piBadge) && (
           <div class="session-meta">
-            <span class="session-status-label">{session.status.label}</span>
+            {session.status?.label && <span class="session-status-label">{session.status.label}</span>}
+            {piBadge?.compacting && <span class="session-pi-badge session-pi-badge-compact">compacting</span>}
+            {!piBadge?.compacting && piBadge?.lastCompactionResult === 'done' && <span class="session-pi-badge session-pi-badge-compact-done">compacted</span>}
+            {!piBadge?.compacting && piBadge?.lastCompactionResult === 'aborted' && <span class="session-pi-badge session-pi-badge-compact-aborted">compact?</span>}
+            {piBadge?.retrying && <span class="session-pi-badge session-pi-badge-retry">retrying</span>}
+            {!piBadge?.retrying && piBadge?.lastRetryResult === 'failed' && <span class="session-pi-badge session-pi-badge-retry-fail">retry✗</span>}
           </div>
         )}
       </div>

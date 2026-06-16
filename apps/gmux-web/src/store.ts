@@ -48,6 +48,24 @@ export const unmatchedActiveCount = signal(0)
 
 export const peers = signal<PeerInfo[]>([])
 
+/**
+ * Per-session pi-rpc header state: compaction and retry badges.
+ * Updated by PiSessionView when it processes relevant stream events.
+ * Read by sidebar SessionItem to show concise state badges.
+ */
+export interface PiSessionBadgeState {
+  compacting: boolean
+  retrying: boolean
+  lastCompactionResult: 'done' | 'aborted' | null
+  lastRetryResult: 'success' | 'failed' | null
+}
+export const piSessionBadges = signal<ReadonlyMap<string, PiSessionBadgeState>>(new Map())
+export function updatePiSessionBadges(sessionId: string, state: PiSessionBadgeState): void {
+  const next = new Map(piSessionBadges.value)
+  next.set(sessionId, state)
+  piSessionBadges.value = next
+}
+
 // ── Git status (push-based, updated via git-status SSE events) ─────────────
 
 /** Per-project git status result keyed by project slug. */
