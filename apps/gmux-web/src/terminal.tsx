@@ -6,7 +6,6 @@ import { DEFAULT_THEME_COLORS, type ResolvedKeybind } from './config'
 import { focusTerminalInput, useTouchPan } from './terminal-touch'
 import { getSelectionText, clearSelection, selectAllAndCopy } from './selection'
 import { handleTerminalLinkClick } from './terminal-links'
-import { createReplayBuffer } from './replay'
 import { createTerminalIO, type TerminalSize } from './terminal-io'
 import { measureTerminalFit } from './terminal-fit'
 import { applyWtermTheme } from './terminal-theme'
@@ -31,7 +30,7 @@ export const TERM_THEME: ITheme = DEFAULT_THEME_COLORS
 // Intercept those calls and POST to /v1/open-path instead.
 ;(function interceptFileLinks() {
   const _orig = window.open.bind(window)
-  window.open = function (url?: string | URL, target?: string, features?: string) {
+  window.open = ((url?: string | URL, target?: string, features?: string) => {
     const href = typeof url === 'string' ? url : url instanceof URL ? url.href : ''
     if (href.startsWith('file://')) {
       const path = decodeURIComponent(href.slice('file://'.length))
@@ -43,7 +42,7 @@ export const TERM_THEME: ITheme = DEFAULT_THEME_COLORS
       return null
     }
     return _orig(url as string, target, features)
-  } as typeof window.open
+  }) as typeof window.open
 })()
 
 // ── Utilities ──
@@ -361,7 +360,7 @@ export function TerminalView({
       copyActionRef.current  = () => {
         const text = getSelectionText()
         if (text) {
-          navigator.clipboard.writeText(text).catch(() => {})
+          navigator.clipboard.writeText(text).catch(() => undefined)
           clearSelection()
         } else {
           selectAllAndCopy(term!.element)

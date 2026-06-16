@@ -14,7 +14,7 @@
  */
 
 import { signal, computed, batch, effect } from '@preact/signals'
-import type { Session, ProjectItem, DiscoveredProject, PeerInfo, LauncherDef, Folder } from './types'
+import type { Session, ProjectItem, DiscoveredProject, PeerInfo, LauncherDef } from './types'
 import type { View } from './routing'
 import { resolveViewFromPath, viewToPath, sessionPath } from './routing'
 import { buildProjectFolders, matchSession } from './projects'
@@ -578,7 +578,7 @@ export function markSessionRead(id: string) {
     dsMap.set(id, { status: updatedSession.status, unread: updatedSession.unread })
     sessionDotStates.value = dsMap
   }
-  fetch(`/v1/sessions/${id}/read`, { method: 'POST' }).catch(() => {})
+  fetch(`/v1/sessions/${id}/read`, { method: 'POST' }).catch(() => undefined)
 }
 
 export function setProjects(data: { configured: ProjectItem[]; discovered: DiscoveredProject[]; unmatchedActiveCount: number }) {
@@ -884,7 +884,7 @@ export function initStore(): () => void {
           sessions.value = list
           sessionDotStates.value = buildDotStates(list)
         })
-      }).catch(() => {})
+      }).catch(() => undefined)
     }
     sseConnected = true
   })

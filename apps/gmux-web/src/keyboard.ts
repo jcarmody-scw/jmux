@@ -91,7 +91,7 @@ async function uploadAndFormatPath(
   feedback('info', `Pasted to ${result.path}`)
   // Copy the materialized path to the system clipboard so the user can
   // paste it directly into a conversation or shell prompt.
-  navigator.clipboard.writeText(result.path).catch(() => {})
+  navigator.clipboard.writeText(result.path).catch(() => undefined)
   return formatPasteText(result.path, bracketedPasteMode)
 }
 

@@ -50,7 +50,7 @@ export function useTouchPan(
   termRef: RefObject<WTerm | null>,
   viewportSizeRef: RefObject<TerminalSize | null>,
   ptySizeRef: RefObject<TerminalSize | null>,
-  containerRef?: RefObject<HTMLDivElement | null>,
+  _containerRef?: RefObject<HTMLDivElement | null>,
 ): void {
   useEffect(() => {
     const shell = shellRef.current
@@ -123,7 +123,7 @@ export function useTouchPan(
       ev.stopPropagation()
     }
 
-    const handleTouchEnd = (ev: TouchEvent) => {
+    const handleTouchEnd = (_ev: TouchEvent) => {
       if (state.longPressTimer !== null) {
         clearTimeout(state.longPressTimer)
         state.longPressTimer = null

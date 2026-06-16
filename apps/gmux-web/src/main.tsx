@@ -71,7 +71,7 @@ function MainHeader({ session, onRestart, syncDiag }: {
       </div>
       <div class="main-header-right">
         {syncDiag && <SyncDiagBadge diag={syncDiag} />}
-        {session.status && session.status.label && (
+        {session.status?.label && (
           <div class={`main-header-status ${session.status.error ? 'error' : session.status.working ? 'working' : ''}`}>
             <span
               class={`session-dot ${session.status.error ? 'error' : session.status.working ? 'working' : 'idle'}`}

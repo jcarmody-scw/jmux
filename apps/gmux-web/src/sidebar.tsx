@@ -12,7 +12,7 @@ import { useArrivalPulse } from './use-arrival-pulse'
 import {
   folders, selectedId, currentProjectSlug,
   activityMap, sessionDotStates, unmatchedActiveCount, projects, connState,
-  updateProjects, reorderSessions, view,
+  reorderSessions, view,
   openMarkdownTabs, closeMarkdownTab,
   openImageTabs, closeImageTab,
   type MarkdownTab,
@@ -487,11 +487,6 @@ export function Sidebar({
     && projectsVal[0].slug === 'home'
     && projectsVal[0].match.some(r => r.path === '~' && r.exact)
 
-  const seedHomeProject = async () => {
-    if (projects.value.length === 0) {
-      await updateProjects([{ slug: 'home', match: [{ path: '~', exact: true }] }])
-    }
-  }
 
   // Find the current project's filesystem root for the file tree.
   // Priority: project hub > markdown editor > session's folder.

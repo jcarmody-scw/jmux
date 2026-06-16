@@ -554,7 +554,7 @@ body {
   background: oklch(22% 0.01 250 / 0.45);
 }
 .session-close-btn:hover {
-  background: oklch(28% 0.015 250) !important;
+  background: oklch(28% 0.015 250);
   color: var(--text);
 }
 
@@ -1242,7 +1242,7 @@ body {
 }
 .session-tab:hover .session-tab-close,
 .session-tab.selected .session-tab-close { opacity: 0.7; }
-.session-tab-close:hover { opacity: 1 !important; background: var(--bg-hover); }
+.session-tab-close:hover { opacity: 1; background: var(--bg-hover); }
 
 .session-tab-add {
   display: flex;
@@ -1264,7 +1264,7 @@ body {
 
 /* File tree fills the full sidebar in horizontal mode */
 .sidebar-files-pane-full {
-  flex: 1 !important;
+  flex: 1;
   min-height: 0;
 }
 
@@ -1692,7 +1692,7 @@ body {
    inherits the terminal background; real per-row/per-cell backgrounds still
    paint normally. */
 .terminal-container.wterm .term-grid {
-  background: transparent !important;
+  background: transparent;
 }
 
 /* wterm's renderer sets rowEl.style.background on each row based on the last
@@ -1702,7 +1702,7 @@ body {
    Do NOT clear box-shadow: the renderer uses `0 1px 0 <bgColor>` to fill the
    sub-pixel gap between rows. Removing it creates thin visible lines. */
 .terminal-container.wterm .term-row {
-  background: transparent !important;
+  background: transparent;
 }
 
 /* Style wterm's own scrollbar (shown when scrollback content exists). */

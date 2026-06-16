@@ -25,7 +25,7 @@ function send(level: Level, args: unknown[]) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ source: 'frontend', level, msg, data }),
-  }).catch(() => {})
+  }).catch(() => undefined)
 }
 
 const orig = {

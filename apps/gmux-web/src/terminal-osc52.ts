@@ -44,7 +44,7 @@ export function interceptOsc52(data: Uint8Array): Uint8Array {
             try {
               const bytes = Uint8Array.from(atob(payload), c => c.charCodeAt(0))
               const text = new TextDecoder().decode(bytes)
-              navigator.clipboard.writeText(text).catch(() => {})
+              navigator.clipboard.writeText(text).catch(() => undefined)
             } catch { /* invalid base64; ignore */ }
           }
           // Consumed — do NOT push to output
