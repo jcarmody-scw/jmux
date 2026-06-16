@@ -182,6 +182,31 @@ export function extractCommandNames(ev: Record<string, unknown>): string[] | nul
     .filter((name): name is string => typeof name === 'string' && name.length > 0)
 }
 
+export const promptInputMaxRows = 6
+
+export function promptInputRowsForText(text: string): number {
+  const rows = Math.max(1, text.split('\n').length)
+  return Math.min(rows, promptInputMaxRows)
+}
+
+export function commandOutputLines(text: string): string[] {
+  return text.split('\n')
+}
+
+export function turnBlockSummary(blocks: ContentBlock[]): string {
+  const counts: Record<string, number> = {}
+  for (const block of blocks) {
+    if (block.type === 'thinking') {
+      counts.thinking = (counts.thinking ?? 0) + 1
+    } else if (block.type === 'toolCall') {
+      counts[block.name] = (counts[block.name] ?? 0) + 1
+    }
+  }
+  return Object.entries(counts)
+    .map(([name, count]) => `${name} ×${count}`)
+    .join(' · ')
+}
+
 // ---------------------------------------------------------------------------
 // Helper: extract plain text from an RPC tool result/partial-result object.
 // RPC tool results have shape {content: [{type:'text',text:'...'}], details:{}}.
@@ -477,23 +502,23 @@ function ToolBlock({ block, exec }: { block: ToolCallContent; exec: ToolExec | u
       return (
         <>
           {lines.map((l, i) => (
-            <span key={i} class={l.cls || 'pi-session-tool-diff-ctx'}>{l.text}{"\n"}</span>
+            <span key={i} class={`pi-session-tool-detail-line ${l.cls || 'pi-session-tool-diff-ctx'}`}>{l.text}</span>
           ))}
         </>
       )
     }
     if (block.name === 'write') {
       const content = String(block.arguments.content ?? '')
-      return <>{content}</>
+      return <>{commandOutputLines(content).map((line, i) => <span key={i} class="pi-session-tool-detail-line">{line}</span>)}</>
     }
     // bash, read, and fallback: plain output
-    return <>{exec.output || '(no output)'}</>
+    return <>{commandOutputLines(exec.output || '(no output)').map((line, i) => <span key={i} class="pi-session-tool-detail-line">{line}</span>)}</>
   }
 
   return (
-    <div class="pi-session-tool-row">
+    <div class="pi-session-block-row pi-session-tool-row">
       <button
-        class={`pi-session-tool-headline${exec?.isError ? ' pi-session-tool-headline-err' : exec?.done ? ' pi-session-tool-headline-done' : ''}`}
+        class={`pi-session-block-headline pi-session-tool-headline${exec?.isError ? ' pi-session-tool-headline-err' : exec?.done ? ' pi-session-tool-headline-done' : ''}`}
         type="button"
         onClick={() => hasDetail && setOpen(o => !o)}
         style={hasDetail ? undefined : { cursor: 'default' }}
@@ -502,7 +527,7 @@ function ToolBlock({ block, exec }: { block: ToolCallContent; exec: ToolExec | u
         {headline}
       </button>
       {open && hasDetail && (
-        <pre class="pi-session-tool-detail">
+        <pre class="pi-session-block-detail pi-session-tool-detail">
           <DetailContent />
         </pre>
       )}
@@ -520,16 +545,16 @@ export function parseSessionInfo(ev: any): { model: string; thinkingLevel: strin
 export function ThinkingBlock({ block, forceOpen }: { block: ThinkingContent; forceOpen?: boolean }) {
   const [open, setOpen] = useState(false)
   return (
-    <div class="pi-session-thinking">
+    <div class="pi-session-block-row pi-session-thinking">
       <button
-        class="pi-session-thinking-toggle"
+        class="pi-session-block-headline pi-session-thinking-toggle"
         onClick={() => setOpen(o => !o)}
         type="button"
       >
         {open ? '▾' : '▸'} ⟨thinking⟩
       </button>
       {(forceOpen || open) && (
-        <div class="pi-session-thinking-body">
+        <div class="pi-session-block-detail pi-session-thinking-body">
           {block.redacted ? '(redacted)' : block.thinking}
         </div>
       )}
@@ -540,28 +565,19 @@ export function ThinkingBlock({ block, forceOpen }: { block: ThinkingContent; fo
 /**
  * Collapsible container wrapping one SDK turn (one AssistantItem).
  * - Prose (text blocks) is always visible regardless of collapse state.
- * - Collapse only hides tool call rows.
- * - Collapsed summary: ▶ read ×2 · bash ×1
+ * - Collapse hides thinking and tool rows.
+ * - Collapsed summary: ▶ thinking ×1 · read ×2 · bash ×1
  * - NOTE: no overflow property — would break position:sticky on ancestor user prompt.
  */
 function TurnBlock({ item, expandAllThinking }: { item: AssistantItem; expandAllThinking?: boolean }) {
   const [expanded, setExpanded] = useState(true)
 
-  // Count tool calls by name for collapsed summary
-  const toolCounts: Record<string, number> = {}
-  for (const block of item.blocks) {
-    if (block.type === 'toolCall') {
-      toolCounts[block.name] = (toolCounts[block.name] ?? 0) + 1
-    }
-  }
-  const hasTools = Object.keys(toolCounts).length > 0
-  const summaryText = Object.entries(toolCounts)
-    .map(([name, count]) => `${name} ×${count}`)
-    .join(' · ')
+  const summaryText = turnBlockSummary(item.blocks)
+  const hasCollapsibleBlocks = summaryText.length > 0
 
   return (
     <div class="pi-session-turn-block">
-      {hasTools && (
+      {hasCollapsibleBlocks && (
         <button
           class={`pi-session-turn-block-toggle${expanded ? '' : ' pi-session-turn-block-collapsed'}`}
           type="button"
@@ -577,10 +593,10 @@ function TurnBlock({ item, expandAllThinking }: { item: AssistantItem; expandAll
             return <div key={i} class="pi-session-text">{block.text}</div>
           }
           if (block.type === 'thinking') {
+            if (!expanded) return null
             return <ThinkingBlock key={i} block={block} forceOpen={expandAllThinking} />
           }
           if (block.type === 'toolCall') {
-            // Tool rows are hidden when collapsed; prose always visible
             if (!expanded) return null
             return <ToolBlock key={i} block={block} exec={item.toolExecMap[block.id]} />
           }
@@ -613,7 +629,9 @@ function RenderItemView({ item, isSticky, expandAllThinking }: { item: RenderIte
     return (
       <div class={`pi-session-item pi-session-command-output pi-session-command-output-${item.subtype}`}>
         <span class="pi-session-command-output-prefix">↳</span>
-        <span class="pi-session-command-output-text">{item.text}</span>
+        <span class="pi-session-command-output-text">
+          {commandOutputLines(item.text).map((line, i) => <span key={i} class="pi-session-command-output-line">{line}</span>)}
+        </span>
       </div>
     )
   }
@@ -687,6 +705,7 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
   const retryCountRef = useRef(0)
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const messagesRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
 
   // Derive: index of the last user or command item — sticky while streaming.
   // This is the prompt or command that triggered the active agent run.
@@ -704,6 +723,17 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
       el.scrollTop = el.scrollHeight
     }
   }, [items])
+
+  useEffect(() => {
+    const el = inputRef.current
+    if (!el) return
+    const lineHeight = Number.parseFloat(getComputedStyle(el).lineHeight) || 18
+    const verticalChrome = el.offsetHeight - el.clientHeight + 14
+    const maxHeight = (lineHeight * promptInputMaxRows) + verticalChrome
+    el.style.height = 'auto'
+    el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`
+    el.style.overflowY = el.scrollHeight > maxHeight ? 'auto' : 'hidden'
+  }, [inputText])
 
   // Stable event dispatcher — uses reduceItems for all items changes
   // Stable event dispatcher — uses reduceItems for all items changes
@@ -798,10 +828,10 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
     if (!trimmed) return
     const ws = wsRef.current
     if (!ws || ws.readyState !== WebSocket.OPEN) return
-    ws.send(JSON.stringify({ type: 'prompt', text: trimmed }))
+    ws.send(JSON.stringify({ type: 'prompt', text: trimmed, ...(streaming ? { streamingBehavior: 'steer' } : {}) }))
     setItems(prev => [...prev, inputItemForText(trimmed, commandNames ?? undefined)])
     setInputText('')
-  }, [commandNames])
+  }, [commandNames, streaming])
 
   const sendAbort = useCallback(() => {
     const ws = wsRef.current
@@ -894,11 +924,12 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
           </button>
         )}
 
-        <input
+        <textarea
+          ref={inputRef}
           class="pi-session-input"
-          type="text"
+          rows={1}
           value={inputText}
-          onInput={(e) => setInputText((e.target as HTMLInputElement).value)}
+          onInput={(e) => setInputText((e.target as HTMLTextAreaElement).value)}
           onKeyDown={handleKeyDown}
           placeholder="message…"
           disabled={wsState !== 'open'}

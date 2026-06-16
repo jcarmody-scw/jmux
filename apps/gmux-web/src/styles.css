@@ -3333,9 +3333,9 @@ a.home-host-link:hover {
 .pi-session-command-output {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
-  gap: 8px;
-  margin: -2px 0 4px 16px;
-  padding: 6px 10px;
+  gap: 6px;
+  margin: 0 0 2px 12px;
+  padding: 4px 8px;
   color: var(--text-secondary);
   background: var(--bg-secondary);
   border: 1px solid var(--border-subtle);
@@ -3347,6 +3347,15 @@ a.home-host-link:hover {
 .pi-session-command-output-prefix {
   color: var(--text-dim);
   user-select: none;
+}
+
+.pi-session-command-output-text {
+  min-width: 0;
+}
+
+.pi-session-command-output-line {
+  display: block;
+  line-height: 1.35;
 }
 
 .pi-session-command-output-warning {
@@ -3374,29 +3383,39 @@ a.home-host-link:hover {
   50% { opacity: 0; }
 }
 
-/* Thinking block */
-.pi-session-thinking {
-  margin: 4px 0;
+/* Thinking and tool blocks */
+.pi-session-block-row {
+  margin: 3px 0;
 }
-.pi-session-thinking-toggle {
+.pi-session-block-headline {
+  display: block;
+  width: 100%;
   background: none;
   border: none;
   color: var(--text-muted);
-  font-family: 'Fira Code', monospace;
-  font-size: 12px;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12.5px;
   cursor: pointer;
-  padding: 0;
-  opacity: 0.6;
+  padding: 2px 4px;
+  opacity: 0.68;
+  border-radius: 4px;
+  text-align: left;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
-.pi-session-thinking-toggle:hover {
+.pi-session-block-headline:hover {
   opacity: 1;
+  background: var(--bg-secondary);
+  color: var(--text);
 }
-.pi-session-thinking-body {
+.pi-session-block-detail {
   color: var(--text-muted);
   font-size: 12px;
   padding-left: 16px;
-  opacity: 0.7;
+  opacity: 0.76;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
   margin-top: 2px;
 }
 
@@ -3436,22 +3455,8 @@ a.home-host-link:hover {
 .pi-session-tool-row {
   margin: 3px 0;
 }
-
 .pi-session-tool-headline {
-  display: block;
-  width: 100%;
-  background: none;
-  border: none;
-  text-align: left;
-  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
-  font-size: 12.5px;
-  color: var(--text-muted);
-  padding: 2px 4px;
-  border-radius: 4px;
-  cursor: pointer;
-  white-space: pre-wrap;
-  word-break: break-all;
-  line-height: 1.5;
+  word-break: normal;
 }
 .pi-session-tool-headline:hover {
   background: var(--bg-secondary);
@@ -3476,6 +3481,9 @@ a.home-host-link:hover {
 .pi-session-tool-detail {
   max-height: 240px;
   overflow-y: auto;
+  overflow-x: hidden;
+  max-width: 100%;
+  box-sizing: border-box;
   margin: 4px 0 4px 16px;
   padding: 8px 12px;
   font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
@@ -3485,8 +3493,16 @@ a.home-host-link:hover {
   border-radius: 4px;
   background: var(--bg-tertiary, #0a0e18);
   color: var(--text-muted);
-  white-space: pre;
-  word-break: normal;
+  white-space: normal;
+}
+.pi-session-tool-detail-line {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .pi-session-tool-diff-add {
@@ -3533,7 +3549,7 @@ a.home-host-link:hover {
 /* Input bar */
 .pi-session-input-bar {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 8px;
   padding: 10px 16px;
   background: var(--bg-surface);
@@ -3543,13 +3559,18 @@ a.home-host-link:hover {
 
 .pi-session-input {
   flex: 1;
+  min-height: 34px;
+  max-height: calc((18px * 6) + 16px);
+  resize: none;
+  overflow-y: hidden;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 4px;
   color: var(--text);
   font-family: 'Fira Code', monospace;
   font-size: 13px;
-  padding: 6px 10px;
+  line-height: 18px;
+  padding: 7px 10px;
   outline: none;
 }
 .pi-session-input:focus {
