@@ -3538,6 +3538,39 @@ a.home-host-link:hover {
   animation: subtle-pulse 1s ease-in-out infinite;
 }
 
+.pi-session-decision-log {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+  color: var(--text-secondary);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.pi-session-decision-entry {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  min-width: 0;
+}
+
+.pi-session-decision-label {
+  flex-shrink: 0;
+  font-family: 'Fira Code', monospace;
+  font-size: 11px;
+  color: var(--accent);
+  opacity: 0.82;
+}
+
+.pi-session-decision-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Tool block */
 .pi-session-tool-row {
   margin: 3px 0;

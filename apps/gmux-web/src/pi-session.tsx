@@ -990,6 +990,7 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
   const hasPendingQueue = inputArea.steeringQueue.length > 0 || inputArea.followUpQueue.length > 0
   const inputPlaceholder = streaming ? 'steer the running turn…' : 'message…'
   const headerBadges = formatPiHeaderBadges(piHeaderState)
+  const headerDecisions = piHeaderState.decisions
 
   return (
     <div
@@ -1018,6 +1019,16 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
               {expandAllThinking ? '⟨thinking⟩ ▾' : '⟨thinking⟩ ▸'}
             </button>
           )}
+        </div>
+      )}
+      {headerDecisions.length > 0 && (
+        <div class="pi-session-decision-log" aria-label="decision log">
+          {headerDecisions.map(decision => (
+            <div key={decision} class="pi-session-decision-entry">
+              <span class="pi-session-decision-label">decision</span>
+              <span class="pi-session-decision-text">{decision}</span>
+            </div>
+          ))}
         </div>
       )}
       <div class="pi-session-messages-wrap">
@@ -1097,6 +1108,7 @@ export interface PiHeaderState {
   retryMax: number | null
   lastCompactionResult: 'done' | 'aborted' | null
   lastRetryResult: 'success' | 'failed' | null
+  decisions: string[]
 }
 
 export const initialPiHeaderState: PiHeaderState = {
@@ -1106,12 +1118,35 @@ export const initialPiHeaderState: PiHeaderState = {
   retryMax: null,
   lastCompactionResult: null,
   lastRetryResult: null,
+  decisions: [],
+}
+
+function decisionTextFromEvent(ev: Record<string, unknown>): string | null {
+  const kind = typeof ev.kind === 'string' ? ev.kind.toLowerCase() : ''
+  const type = typeof ev.type === 'string' ? ev.type.toLowerCase() : ''
+  const isDecisionEvent = type === 'decision'
+    || type === 'decision_log'
+    || type === 'decision_log_entry'
+    || (type === 'log' && kind === 'decision')
+    || (type === 'task_log' && kind === 'decision')
+
+  if (!isDecisionEvent) return null
+
+  const text = ev.note ?? ev.message ?? ev.text ?? ev.decision ?? ev.summary
+  if (typeof text !== 'string') return null
+  const trimmed = text.trim()
+  return trimmed.length > 0 ? trimmed : null
 }
 
 export function reducePiHeaderState(
   state: PiHeaderState,
   ev: Record<string, unknown>,
 ): PiHeaderState {
+  const decision = decisionTextFromEvent(ev)
+  if (decision) {
+    return { ...state, decisions: [decision, ...state.decisions.filter(item => item !== decision)].slice(0, 3) }
+  }
+
   switch (ev.type) {
     case 'compaction_start':
       return { ...state, compacting: true, lastCompactionResult: null }

@@ -138,6 +138,56 @@ describe('reducePiHeaderState — retry', () => {
 })
 
 // ---------------------------------------------------------------------------
+// reducePiHeaderState — decision log events
+// ---------------------------------------------------------------------------
+
+describe('reducePiHeaderState — decision log', () => {
+  it('records decision events from note text', () => {
+    const state = reducePiHeaderState(initialPiHeaderState, {
+      type: 'decision',
+      note: 'Use sidebar badges for retry state',
+    })
+    expect(state.decisions).toEqual(['Use sidebar badges for retry state'])
+  })
+
+  it('records decision_log events from message text', () => {
+    const state = reducePiHeaderState(initialPiHeaderState, {
+      type: 'decision_log',
+      message: 'Keep compaction notices in the session header',
+    })
+    expect(state.decisions).toEqual(['Keep compaction notices in the session header'])
+  })
+
+  it('records task log decision events', () => {
+    const state = reducePiHeaderState(initialPiHeaderState, {
+      type: 'task_log',
+      kind: 'DECISION',
+      text: 'Show three recent decisions only',
+    })
+    expect(state.decisions).toEqual(['Show three recent decisions only'])
+  })
+
+  it('keeps the three most recent unique decisions', () => {
+    let state = initialPiHeaderState
+    state = reducePiHeaderState(state, { type: 'decision', note: 'first' })
+    state = reducePiHeaderState(state, { type: 'decision', note: 'second' })
+    state = reducePiHeaderState(state, { type: 'decision', note: 'third' })
+    state = reducePiHeaderState(state, { type: 'decision', note: 'fourth' })
+    state = reducePiHeaderState(state, { type: 'decision', note: 'second' })
+    expect(state.decisions).toEqual(['second', 'fourth', 'third'])
+  })
+
+  it('ignores non-decision log events', () => {
+    const state = reducePiHeaderState(initialPiHeaderState, {
+      type: 'task_log',
+      kind: 'PROGRESS',
+      text: 'Implemented UI',
+    })
+    expect(state.decisions).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
 // formatPiHeaderBadges
 // ---------------------------------------------------------------------------
 
@@ -216,12 +266,11 @@ describe('formatPiHeaderBadges', () => {
 
   it('returns both compaction and retry badges when both are active', () => {
     const state: PiHeaderState = {
+      ...initialPiHeaderState,
       compacting: true,
       retrying: true,
       retryAttempt: 1,
       retryMax: 3,
-      lastCompactionResult: null,
-      lastRetryResult: null,
     }
     const badges = formatPiHeaderBadges(state)
     expect(badges).toHaveLength(2)
