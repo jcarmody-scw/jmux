@@ -3570,6 +3570,33 @@ a.home-host-link:hover {
   opacity: 0.85;
 }
 
+.pi-session-input-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px 0;
+  background: var(--bg-surface);
+  color: var(--text-muted);
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+
+.pi-session-active-tool-status {
+  color: var(--accent);
+}
+
+.pi-session-queue-chip {
+  max-width: min(520px, 45vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 2px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.14);
+}
+
 /* Input bar */
 .pi-session-input-bar {
   display: flex;

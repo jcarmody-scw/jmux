@@ -44,6 +44,31 @@ export interface ToolExec {
 
 export type ToolExecMap = Record<string, ToolExec>
 
+export interface ActiveToolStatus {
+  id: string
+  name: string
+  label: string
+  detail: string
+}
+
+export interface InputAreaState {
+  activeTools: ActiveToolStatus[]
+  steeringQueue: string[]
+  followUpQueue: string[]
+}
+
+export const initialInputAreaState: InputAreaState = {
+  activeTools: [],
+  steeringQueue: [],
+  followUpQueue: [],
+}
+
+export interface PromptPayload {
+  type: 'prompt'
+  text: string
+  streamingBehavior?: 'steer'
+}
+
 // ---------------------------------------------------------------------------
 // Render items
 // ---------------------------------------------------------------------------
@@ -213,6 +238,70 @@ export function turnBlockSummary(blocks: ContentBlock[]): string {
 
 export function turnBlockToggleLabel(expanded: boolean, summaryText: string): string {
   return `${expanded ? '▾' : '▶'} ${summaryText}`
+}
+
+function toolDetail(toolName: string, args: Record<string, unknown>): string {
+  switch (toolName) {
+    case 'bash':
+      return String(args.command ?? '')
+    case 'read':
+    case 'edit':
+    case 'write':
+      return String(args.path ?? '')
+    default:
+      return ''
+  }
+}
+
+export function reduceInputAreaState(state: InputAreaState, ev: Record<string, unknown>): InputAreaState {
+  switch (ev.type) {
+    case 'tool_execution_start': {
+      const id = String(ev.toolCallId)
+      const name = String(ev.toolName)
+      const args = (ev.args as Record<string, unknown>) ?? {}
+      const active: ActiveToolStatus = {
+        id,
+        name,
+        label: name,
+        detail: toolDetail(name, args),
+      }
+      return {
+        ...state,
+        activeTools: [...state.activeTools.filter(tool => tool.id !== id), active],
+      }
+    }
+    case 'tool_execution_end': {
+      const id = String(ev.toolCallId)
+      return { ...state, activeTools: state.activeTools.filter(tool => tool.id !== id) }
+    }
+    case 'queue_update': {
+      return {
+        ...state,
+        steeringQueue: Array.isArray(ev.steering) ? ev.steering.map(String) : state.steeringQueue,
+        followUpQueue: Array.isArray(ev.followUp) ? ev.followUp.map(String) : state.followUpQueue,
+      }
+    }
+    case 'agent_end':
+    case 'error':
+      return { ...state, activeTools: [] }
+    default:
+      return state
+  }
+}
+
+export function formatActiveToolStatus(state: InputAreaState): string {
+  if (!state.activeTools.length) return ''
+  if (state.activeTools.length === 1) {
+    const tool = state.activeTools[0]
+    return tool.detail ? `running ${tool.label}: ${tool.detail}` : `running ${tool.label}`
+  }
+  return `running ${state.activeTools.length} tools`
+}
+
+export function createPromptPayload(text: string, isStreaming: boolean): PromptPayload {
+  return isStreaming
+    ? { type: 'prompt', text, streamingBehavior: 'steer' }
+    : { type: 'prompt', text }
 }
 
 // ---------------------------------------------------------------------------
@@ -708,6 +797,7 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
   const [sessionInfo, setSessionInfo] = useState<{ model: string; thinkingLevel: string } | null>(null)
   const [expandAllThinking, setExpandAllThinking] = useState(false)
   const [commandNames, setCommandNames] = useState<Set<string> | null>(null)
+  const [inputArea, setInputArea] = useState<InputAreaState>(initialInputAreaState)
 
   const wsRef = useRef<WebSocket | null>(null)
   const retryCountRef = useRef(0)
@@ -756,6 +846,7 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
     // Items update via pure reducer
     setItems(prev => reduceItems(prev, ev))
 
+    setInputArea(prev => reduceInputAreaState(prev, ev))
     // Streaming state management (not captured by reduceItems)
     switch (ev.type) {
       case 'agent_start': {
@@ -837,7 +928,7 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
     if (!trimmed) return
     const ws = wsRef.current
     if (!ws || ws.readyState !== WebSocket.OPEN) return
-    ws.send(JSON.stringify({ type: 'prompt', text: trimmed, ...(streaming ? { streamingBehavior: 'steer' } : {}) }))
+    ws.send(JSON.stringify(createPromptPayload(trimmed, streaming)))
     setItems(prev => [...prev, inputItemForText(trimmed, commandNames ?? undefined)])
     setInputText('')
   }, [commandNames, streaming])
@@ -878,6 +969,9 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
   const hasThinking = items.some(
     item => item.kind === 'assistant' && (item as AssistantItem).blocks.some(b => b.type === 'thinking')
   )
+  const activeToolStatus = formatActiveToolStatus(inputArea)
+  const hasPendingQueue = inputArea.steeringQueue.length > 0 || inputArea.followUpQueue.length > 0
+  const inputPlaceholder = streaming ? 'steer the running turn…' : 'message…'
 
   return (
     <div
@@ -916,6 +1010,17 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
         <PiJumpToBottom containerRef={messagesRef} />
       </div>
 
+      {(activeToolStatus || hasPendingQueue) && (
+        <div class="pi-session-input-status">
+          {activeToolStatus && <span class="pi-session-active-tool-status">{activeToolStatus}</span>}
+          {inputArea.steeringQueue.length > 0 && (
+            <span class="pi-session-queue-chip">steer ×{inputArea.steeringQueue.length}: {inputArea.steeringQueue[0]}</span>
+          )}
+          {inputArea.followUpQueue.length > 0 && (
+            <span class="pi-session-queue-chip">follow-up ×{inputArea.followUpQueue.length}: {inputArea.followUpQueue[0]}</span>
+          )}
+        </div>
+      )}
       <div class="pi-session-input-bar">
         {wsState !== 'open' && (
           <span class={`pi-session-ws-state pi-session-ws-state-${wsState}`}>
@@ -940,7 +1045,7 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
           value={inputText}
           onInput={(e) => setInputText((e.target as HTMLTextAreaElement).value)}
           onKeyDown={handleKeyDown}
-          placeholder="message…"
+          placeholder={inputPlaceholder}
           disabled={wsState !== 'open'}
         />
       </div>
