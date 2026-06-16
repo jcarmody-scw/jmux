@@ -19,7 +19,7 @@ import { EditorState } from '@codemirror/state'
 import { EditorView, keymap } from '@codemirror/view'
 import { defaultKeymap, historyKeymap, history, indentWithTab } from '@codemirror/commands'
 import { markdown } from '@codemirror/lang-markdown'
-import { Table } from '@lezer/markdown'
+import { Table, TaskList } from '@lezer/markdown'
 import {
   livePreviewPlugin,
   markdownStylePlugin,
@@ -31,6 +31,7 @@ import {
   mouseSelectingField,
   setMouseSelecting,
 } from 'codemirror-live-markdown'
+import { taskListField } from './task-list-field'
 
 // ── API helpers ──────────────────────────────────────────────────────────────
 
@@ -225,6 +226,15 @@ const gmuxTheme = EditorView.theme({
   // Links
   '.cm-link': { color: 'var(--accent, oklch(65% 0.18 250))' },
   '.cm-wikilink': { color: 'var(--accent, oklch(65% 0.18 250))' },
+  // Task list checkboxes
+  '.cm-task-checkbox': {
+    width: '0.95em',
+    height: '0.95em',
+    margin: '0 0.35em 0 0',
+    verticalAlign: '-0.12em',
+    accentColor: 'var(--accent, oklch(65% 0.18 250))',
+    cursor: 'pointer',
+  },
   // Tables — editorTheme uses .cm-table-widget/.cm-table-editor (not .cm-table-wrapper)
   '.cm-table-widget table': { borderCollapse: 'collapse', width: '100%', margin: '0.8em 0', fontSize: '14px' },
   '.cm-table-widget th': {
@@ -366,12 +376,13 @@ export function MarkdownEditor({ projectSlug, filePath }: MarkdownEditorProps) {
         doc: body,
         extensions: [
           history(),
-          markdown({ extensions: [Table] }),   // Table parser required for tableField
+          markdown({ extensions: [Table, TaskList] }), // Table and task-list parsers for live preview fields
           collapseOnSelectionFacet.of(true),   // enable live preview collapsing
           mouseSelectingField,                 // track mouse selection state
           livePreviewPlugin,                   // hide markers on unfocused lines
           markdownStylePlugin,                 // heading sizes, bold/italic styles
           tableField,                          // GFM tables → HTML
+          taskListField,                       // GFM task markers → checkboxes
           codeBlockField(),                    // fenced code blocks → highlighted widget
           imageField(),                        // inline image previews
           editorTheme,                         // package default animations
