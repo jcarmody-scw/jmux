@@ -3245,6 +3245,30 @@ a.home-host-link:hover {
   min-height: 0;
 }
 
+.pi-session-messages,
+.pi-session-tool-detail,
+.pi-session-input-scrollable {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.pi-session-messages::-webkit-scrollbar,
+.pi-session-tool-detail::-webkit-scrollbar,
+.pi-session-input-scrollable::-webkit-scrollbar {
+  width: 3px;
+  height: 3px;
+}
+.pi-session-messages::-webkit-scrollbar-track,
+.pi-session-tool-detail::-webkit-scrollbar-track,
+.pi-session-input-scrollable::-webkit-scrollbar-track {
+  background: transparent;
+}
+.pi-session-messages::-webkit-scrollbar-thumb,
+.pi-session-tool-detail::-webkit-scrollbar-thumb,
+.pi-session-input-scrollable::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 2px;
+}
+
 /* Shared item base */
 .pi-session-item {
   line-height: 1.55;
@@ -3573,12 +3597,22 @@ a.home-host-link:hover {
   padding: 7px 10px;
   outline: none;
 }
+
+.pi-session-input:not(.pi-session-input-scrollable) {
+  scrollbar-width: none;
+}
+.pi-session-input:not(.pi-session-input-scrollable)::-webkit-scrollbar {
+  display: none;
+}
 .pi-session-input:focus {
   border-color: var(--accent);
 }
 .pi-session-input::placeholder {
   color: var(--text-muted);
   opacity: 0.5;
+}
+.pi-session-input-scrollable {
+  overflow-y: auto;
 }
 .pi-session-input:disabled {
   opacity: 0.5;
@@ -3628,14 +3662,15 @@ a.home-host-link:hover {
   font-family: 'Fira Code', monospace;
   font-size: 11px;
   cursor: pointer;
-  padding: 1px 0;
+  padding: 2px 0 2px 12px;
   text-align: left;
-  opacity: 0.55;
+  opacity: 0.72;
   line-height: 1.4;
   user-select: none;
 }
 .pi-session-turn-block-toggle:hover {
   opacity: 0.9;
+  color: var(--text-secondary);
 }
 .pi-session-turn-block-collapsed {
   opacity: 0.7;

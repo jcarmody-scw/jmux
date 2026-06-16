@@ -189,6 +189,10 @@ export function promptInputRowsForText(text: string): number {
   return Math.min(rows, promptInputMaxRows)
 }
 
+export function promptInputOverflowY(text: string): 'hidden' | 'auto' {
+  return text.split('\n').length > promptInputMaxRows ? 'auto' : 'hidden'
+}
+
 export function commandOutputLines(text: string): string[] {
   return text.split('\n')
 }
@@ -205,6 +209,10 @@ export function turnBlockSummary(blocks: ContentBlock[]): string {
   return Object.entries(counts)
     .map(([name, count]) => `${name} ×${count}`)
     .join(' · ')
+}
+
+export function turnBlockToggleLabel(expanded: boolean, summaryText: string): string {
+  return `${expanded ? '▾' : '▶'} ${summaryText}`
 }
 
 // ---------------------------------------------------------------------------
@@ -584,7 +592,7 @@ function TurnBlock({ item, expandAllThinking }: { item: AssistantItem; expandAll
           onClick={() => setExpanded(e => !e)}
           aria-label={expanded ? 'collapse turn' : 'expand turn'}
         >
-          {expanded ? '▾' : `▶ ${summaryText}`}
+          {turnBlockToggleLabel(expanded, summaryText)}
         </button>
       )}
       <div class="pi-session-item pi-session-item-assistant">
@@ -728,11 +736,12 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
     const el = inputRef.current
     if (!el) return
     const lineHeight = Number.parseFloat(getComputedStyle(el).lineHeight) || 18
-    const verticalChrome = el.offsetHeight - el.clientHeight + 14
+    const verticalChrome = el.offsetHeight - el.clientHeight
     const maxHeight = (lineHeight * promptInputMaxRows) + verticalChrome
+    const shouldScroll = promptInputOverflowY(inputText) === 'auto' || el.scrollHeight > maxHeight
     el.style.height = 'auto'
     el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`
-    el.style.overflowY = el.scrollHeight > maxHeight ? 'auto' : 'hidden'
+    el.style.overflowY = shouldScroll ? 'auto' : 'hidden'
   }, [inputText])
 
   // Stable event dispatcher — uses reduceItems for all items changes
@@ -926,8 +935,8 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
 
         <textarea
           ref={inputRef}
-          class="pi-session-input"
-          rows={1}
+          class={`pi-session-input${promptInputOverflowY(inputText) === 'auto' ? ' pi-session-input-scrollable' : ''}`}
+          rows={promptInputRowsForText(inputText)}
           value={inputText}
           onInput={(e) => setInputText((e.target as HTMLTextAreaElement).value)}
           onKeyDown={handleKeyDown}
