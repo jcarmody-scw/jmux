@@ -2,6 +2,7 @@ package adapters
 
 import (
 	"os/exec"
+	"strings"
 
 	"github.com/gmuxapp/gmux/packages/adapter"
 )
@@ -36,12 +37,26 @@ func NewPiRPCSbx() *PiRPCSbx {
 
 func (a *PiRPCSbx) Name() string { return "pi-rpc-sbx" }
 
-// Discover returns true if both sbx and the pi-rpc-lib prerequisites are present.
+// Discover returns true if sbx exists and the installed pi binary supports --sbx.
 func (a *PiRPCSbx) Discover() bool {
 	if _, err := exec.LookPath("sbx"); err != nil {
 		return false
 	}
-	return a.sdk.Discover()
+	if !a.sdk.Discover() {
+		return false
+	}
+	return piSupportsSbxFlag(a.sdk.piBin)
+}
+
+func piSupportsSbxFlag(piBin string) bool {
+	if piBin == "" {
+		return false
+	}
+	out, err := exec.Command(piBin, "--help").CombinedOutput()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(out), "--sbx")
 }
 
 // Match always returns false: pi-rpc-sbx sessions are not PTY sessions.
