@@ -3,6 +3,7 @@
 import { type Session } from './types'
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks'
 import type { JSX, RefObject } from 'preact'
+import { updatePiSessionBadges } from './store'
 
 // ---------------------------------------------------------------------------
 // Content block types (mirroring SDK AgentMessage content)
@@ -333,6 +334,39 @@ export function extractCommandNames(ev: Record<string, unknown>): string[] | nul
   return data.commands
     .map(command => command.name)
     .filter((name): name is string => typeof name === 'string' && name.length > 0)
+}
+
+export const promptInputMaxRows = 6
+
+export function promptInputRowsForText(text: string): number {
+  const rows = Math.max(1, text.split('\n').length)
+  return Math.min(rows, promptInputMaxRows)
+}
+
+export function promptInputOverflowY(text: string): 'hidden' | 'auto' {
+  return text.split('\n').length > promptInputMaxRows ? 'auto' : 'hidden'
+}
+
+export function commandOutputLines(text: string): string[] {
+  return text.split('\n')
+}
+
+export function turnBlockSummary(blocks: ContentBlock[]): string {
+  const counts: Record<string, number> = {}
+  for (const block of blocks) {
+    if (block.type === 'thinking') {
+      counts.thinking = (counts.thinking ?? 0) + 1
+    } else if (block.type === 'toolCall') {
+      counts[block.name] = (counts[block.name] ?? 0) + 1
+    }
+  }
+  return Object.entries(counts)
+    .map(([name, count]) => `${name} ×${count}`)
+    .join(' · ')
+}
+
+export function turnBlockToggleLabel(expanded: boolean, summaryText: string): string {
+  return `${expanded ? '▾' : '▶'} ${summaryText}`
 }
 
 function toolDetail(toolName: string, args: Record<string, unknown>): string {
@@ -713,23 +747,23 @@ function ToolBlock({ block, exec }: { block: ToolCallContent; exec: ToolExec | u
       return (
         <>
           {lines.map((l, i) => (
-            <span key={i} class={l.cls || 'pi-session-tool-diff-ctx'}>{l.text}{"\n"}</span>
+            <span key={i} class={`pi-session-tool-detail-line ${l.cls || 'pi-session-tool-diff-ctx'}`}>{l.text}</span>
           ))}
         </>
       )
     }
     if (block.name === 'write') {
       const content = String(block.arguments.content ?? '')
-      return <>{content}</>
+      return <>{commandOutputLines(content).map((line, i) => <span key={i} class="pi-session-tool-detail-line">{line}</span>)}</>
     }
     // bash, read, and fallback: plain output
-    return <>{exec.output || '(no output)'}</>
+    return <>{commandOutputLines(exec.output || '(no output)').map((line, i) => <span key={i} class="pi-session-tool-detail-line">{line}</span>)}</>
   }
 
   return (
-    <div class="pi-session-tool-row">
+    <div class="pi-session-block-row pi-session-tool-row">
       <button
-        class={`pi-session-tool-headline${exec?.isError ? ' pi-session-tool-headline-err' : exec?.done ? ' pi-session-tool-headline-done' : ''}`}
+        class={`pi-session-block-headline pi-session-tool-headline${exec?.isError ? ' pi-session-tool-headline-err' : exec?.done ? ' pi-session-tool-headline-done' : ''}`}
         type="button"
         onClick={() => hasDetail && setOpen(o => !o)}
         style={hasDetail ? undefined : { cursor: 'default' }}
@@ -738,7 +772,7 @@ function ToolBlock({ block, exec }: { block: ToolCallContent; exec: ToolExec | u
         {headline}
       </button>
       {open && hasDetail && (
-        <pre class="pi-session-tool-detail">
+        <pre class="pi-session-block-detail pi-session-tool-detail">
           <DetailContent />
         </pre>
       )}
@@ -756,16 +790,16 @@ export function parseSessionInfo(ev: any): { model: string; thinkingLevel: strin
 export function ThinkingBlock({ block, forceOpen }: { block: ThinkingContent; forceOpen?: boolean }) {
   const [open, setOpen] = useState(false)
   return (
-    <div class="pi-session-thinking">
+    <div class="pi-session-block-row pi-session-thinking">
       <button
-        class="pi-session-thinking-toggle"
+        class="pi-session-block-headline pi-session-thinking-toggle"
         onClick={() => setOpen(o => !o)}
         type="button"
       >
         {open ? '▾' : '▸'} ⟨thinking⟩
       </button>
       {(forceOpen || open) && (
-        <div class="pi-session-thinking-body">
+        <div class="pi-session-block-detail pi-session-thinking-body">
           {block.redacted ? '(redacted)' : block.thinking}
         </div>
       )}
@@ -776,35 +810,26 @@ export function ThinkingBlock({ block, forceOpen }: { block: ThinkingContent; fo
 /**
  * Collapsible container wrapping one SDK turn (one AssistantItem).
  * - Prose (text blocks) is always visible regardless of collapse state.
- * - Collapse only hides tool call rows.
- * - Collapsed summary: ▶ read ×2 · bash ×1
+ * - Collapse hides thinking and tool rows.
+ * - Collapsed summary: ▶ thinking ×1 · read ×2 · bash ×1
  * - NOTE: no overflow property — would break position:sticky on ancestor user prompt.
  */
 function TurnBlock({ item, expandAllThinking }: { item: AssistantItem; expandAllThinking?: boolean }) {
   const [expanded, setExpanded] = useState(true)
 
-  // Count tool calls by name for collapsed summary
-  const toolCounts: Record<string, number> = {}
-  for (const block of item.blocks) {
-    if (block.type === 'toolCall') {
-      toolCounts[block.name] = (toolCounts[block.name] ?? 0) + 1
-    }
-  }
-  const hasTools = Object.keys(toolCounts).length > 0
-  const summaryText = Object.entries(toolCounts)
-    .map(([name, count]) => `${name} ×${count}`)
-    .join(' · ')
+  const summaryText = turnBlockSummary(item.blocks)
+  const hasCollapsibleBlocks = summaryText.length > 0
 
   return (
     <div class="pi-session-turn-block">
-      {hasTools && (
+      {hasCollapsibleBlocks && (
         <button
           class={`pi-session-turn-block-toggle${expanded ? '' : ' pi-session-turn-block-collapsed'}`}
           type="button"
           onClick={() => setExpanded(e => !e)}
           aria-label={expanded ? 'collapse turn' : 'expand turn'}
         >
-          {expanded ? '▾' : `▶ ${summaryText}`}
+          {turnBlockToggleLabel(expanded, summaryText)}
         </button>
       )}
       <div class="pi-session-item pi-session-item-assistant">
@@ -813,10 +838,10 @@ function TurnBlock({ item, expandAllThinking }: { item: AssistantItem; expandAll
             return <div key={i} class="pi-session-text">{block.text}</div>
           }
           if (block.type === 'thinking') {
+            if (!expanded) return null
             return <ThinkingBlock key={i} block={block} forceOpen={expandAllThinking} />
           }
           if (block.type === 'toolCall') {
-            // Tool rows are hidden when collapsed; prose always visible
             if (!expanded) return null
             return <ToolBlock key={i} block={block} exec={item.toolExecMap[block.id]} />
           }
@@ -849,7 +874,9 @@ function RenderItemView({ item, isSticky, expandAllThinking }: { item: RenderIte
     return (
       <div class={`pi-session-item pi-session-command-output pi-session-command-output-${item.subtype}`}>
         <span class="pi-session-command-output-prefix">↳</span>
-        <span class="pi-session-command-output-text">{item.text}</span>
+        <span class="pi-session-command-output-text">
+          {commandOutputLines(item.text).map((line, i) => <span key={i} class="pi-session-command-output-line">{line}</span>)}
+        </span>
       </div>
     )
   }
@@ -973,6 +1000,7 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
   const [scrollNavigationLocked, setScrollNavigationLocked] = useState(false)
   const [rightPanelWidth, setRightPanelWidth] = useState(RIGHT_PANEL_DEFAULT_WIDTH)
   const [rightPanelResizing, setRightPanelResizing] = useState(false)
+  const [piHeaderState, setPiHeaderState] = useState<PiHeaderState>(initialPiHeaderState)
 
   const wsRef = useRef<WebSocket | null>(null)
   const retryCountRef = useRef(0)
@@ -980,6 +1008,7 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
   const messagesRef = useRef<HTMLDivElement>(null)
   const itemRefs = useRef<Record<number, HTMLDivElement | null>>({})
   const rightPanelResizeRef = useRef<{ startWidth: number; startClientX: number } | null>(null)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
 
   // Derive: index of the last user or command item — sticky while streaming.
   // This is the prompt or command that triggered the active agent run.
@@ -1013,6 +1042,18 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
     return () => el.removeEventListener('scroll', updateNavigationLock)
   }, [])
 
+  useEffect(() => {
+    const el = inputRef.current
+    if (!el) return
+    const lineHeight = Number.parseFloat(getComputedStyle(el).lineHeight) || 18
+    const verticalChrome = el.offsetHeight - el.clientHeight
+    const maxHeight = (lineHeight * promptInputMaxRows) + verticalChrome
+    const shouldScroll = promptInputOverflowY(inputText) === 'auto' || el.scrollHeight > maxHeight
+    el.style.height = 'auto'
+    el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`
+    el.style.overflowY = shouldScroll ? 'auto' : 'hidden'
+  }, [inputText])
+
   // Stable event dispatcher — uses reduceItems for all items changes
   // Stable event dispatcher — uses reduceItems for all items changes
   const dispatchEvent = useCallback((ev: Record<string, unknown>) => {
@@ -1028,6 +1069,21 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
     setItems(prev => reduceItems(prev, ev))
 
     setInputArea(prev => reduceInputAreaState(prev, ev))
+
+    // Header state (compaction / retry badges)
+    setPiHeaderState(prev => {
+      const next = reducePiHeaderState(prev, ev)
+      if (next !== prev) {
+        updatePiSessionBadges(session.id, {
+          compacting: next.compacting,
+          retrying: next.retrying,
+          lastCompactionResult: next.lastCompactionResult,
+          lastRetryResult: next.lastRetryResult,
+        })
+      }
+      return next
+    })
+
     // Streaming state management (not captured by reduceItems)
     switch (ev.type) {
       case 'agent_start': {
@@ -1043,7 +1099,7 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
         break
       }
     }
-  }, [])
+  }, [session.id])
 
   const connect = useCallback(() => {
     if (wsRef.current) {
@@ -1197,19 +1253,27 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
   const activeToolStatus = formatActiveToolStatus(inputArea)
   const hasPendingQueue = inputArea.steeringQueue.length > 0 || inputArea.followUpQueue.length > 0
   const inputPlaceholder = streaming ? 'steer the running turn…' : 'message…'
+  const headerBadges = formatPiHeaderBadges(piHeaderState)
+  const headerDecisions = piHeaderState.decisions
 
   return (
     <div
       class="pi-session"
       style={{ display: isActive ? 'flex' : 'none' }}
     >
-      {(sessionInfo || hasThinking) && (
+      {(sessionInfo || hasThinking || headerBadges.length > 0) && (
         <div class="pi-session-header">
           {sessionInfo && (
             <span class="pi-session-model-badge">
               {sessionInfo.model}{sessionInfo.thinkingLevel ? ` · ${sessionInfo.thinkingLevel}` : ''}
             </span>
           )}
+          {headerBadges.map(badge => {
+            const cls = badge.startsWith('retry')
+              ? 'pi-session-header-badge pi-session-header-badge-retry'
+              : 'pi-session-header-badge pi-session-header-badge-compact'
+            return <span key={badge} class={cls}>{badge}</span>
+          })}
           {hasThinking && (
             <button
               class="pi-session-expand-thinking"
@@ -1219,6 +1283,16 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
               {expandAllThinking ? '⟨thinking⟩ ▾' : '⟨thinking⟩ ▸'}
             </button>
           )}
+        </div>
+      )}
+      {headerDecisions.length > 0 && (
+        <div class="pi-session-decision-log" aria-label="decision log">
+          {headerDecisions.map(decision => (
+            <div key={decision} class="pi-session-decision-entry">
+              <span class="pi-session-decision-label">decision</span>
+              <span class="pi-session-decision-text">{decision}</span>
+            </div>
+          ))}
         </div>
       )}
       <div class="pi-session-body">
@@ -1281,11 +1355,12 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
           </button>
         )}
 
-        <input
-          class="pi-session-input"
-          type="text"
+        <textarea
+          ref={inputRef}
+          class={`pi-session-input${promptInputOverflowY(inputText) === 'auto' ? ' pi-session-input-scrollable' : ''}`}
+          rows={promptInputRowsForText(inputText)}
           value={inputText}
-          onInput={(e) => setInputText((e.target as HTMLInputElement).value)}
+          onInput={(e) => setInputText((e.target as HTMLTextAreaElement).value)}
           onKeyDown={handleKeyDown}
           placeholder={inputPlaceholder}
           disabled={wsState !== 'open'}
@@ -1302,4 +1377,113 @@ export function PiSessionView({ session, isActive }: PiSessionViewProps) {
 /** Returns true for sessions driven by the pi-rpc subprocess adapter. */
 export function isPiRPCSession(session: { kind: string }): boolean {
   return session.kind === 'pi-rpc' || session.kind === 'pi-rpc-sbx'
+}
+
+// ---------------------------------------------------------------------------
+// s-22: Session header state — compaction and retry tracking
+// ---------------------------------------------------------------------------
+
+export interface PiHeaderState {
+  compacting: boolean
+  retrying: boolean
+  retryAttempt: number | null
+  retryMax: number | null
+  lastCompactionResult: 'done' | 'aborted' | null
+  lastRetryResult: 'success' | 'failed' | null
+  decisions: string[]
+}
+
+export const initialPiHeaderState: PiHeaderState = {
+  compacting: false,
+  retrying: false,
+  retryAttempt: null,
+  retryMax: null,
+  lastCompactionResult: null,
+  lastRetryResult: null,
+  decisions: [],
+}
+
+function decisionTextFromEvent(ev: Record<string, unknown>): string | null {
+  const kind = typeof ev.kind === 'string' ? ev.kind.toLowerCase() : ''
+  const type = typeof ev.type === 'string' ? ev.type.toLowerCase() : ''
+  const isDecisionEvent = type === 'decision'
+    || type === 'decision_log'
+    || type === 'decision_log_entry'
+    || (type === 'log' && kind === 'decision')
+    || (type === 'task_log' && kind === 'decision')
+
+  if (!isDecisionEvent) return null
+
+  const text = ev.note ?? ev.message ?? ev.text ?? ev.decision ?? ev.summary
+  if (typeof text !== 'string') return null
+  const trimmed = text.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
+export function reducePiHeaderState(
+  state: PiHeaderState,
+  ev: Record<string, unknown>,
+): PiHeaderState {
+  const decision = decisionTextFromEvent(ev)
+  if (decision) {
+    return { ...state, decisions: [decision, ...state.decisions.filter(item => item !== decision)].slice(0, 3) }
+  }
+
+  switch (ev.type) {
+    case 'compaction_start':
+      return { ...state, compacting: true, lastCompactionResult: null }
+    case 'compaction_end':
+      return {
+        ...state,
+        compacting: false,
+        lastCompactionResult: ev.aborted ? 'aborted' : 'done',
+      }
+    case 'auto_retry_start':
+      return {
+        ...state,
+        retrying: true,
+        retryAttempt: typeof ev.attempt === 'number' ? ev.attempt : null,
+        retryMax: typeof ev.maxAttempts === 'number' ? ev.maxAttempts : null,
+        lastRetryResult: null,
+      }
+    case 'auto_retry_end':
+      return {
+        ...state,
+        retrying: false,
+        lastRetryResult: ev.success ? 'success' : 'failed',
+      }
+    default:
+      return state
+  }
+}
+
+/**
+ * Derive an array of short badge strings from a PiHeaderState.
+ * Returns [] when there is nothing notable to show.
+ */
+export function formatPiHeaderBadges(state: PiHeaderState): string[] {
+  const badges: string[] = []
+
+  // Compaction badge
+  if (state.compacting) {
+    badges.push('compacting…')
+  } else if (state.lastCompactionResult === 'done') {
+    badges.push('compaction done')
+  } else if (state.lastCompactionResult === 'aborted') {
+    badges.push('compaction aborted')
+  }
+
+  // Retry badge
+  if (state.retrying) {
+    const suffix = (state.retryAttempt !== null && state.retryMax !== null)
+      ? ` ${state.retryAttempt}/${state.retryMax}`
+      : ''
+    badges.push(`retry${suffix}`)
+  } else if (state.lastRetryResult === 'success') {
+    badges.push('retry ok')
+  } else if (state.lastRetryResult === 'failed') {
+    badges.push('retry failed')
+  }
+
+  return badges
 }

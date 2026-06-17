@@ -14,7 +14,7 @@
  */
 
 import { signal, computed, batch, effect } from '@preact/signals'
-import type { Session, ProjectItem, DiscoveredProject, PeerInfo, LauncherDef, Folder } from './types'
+import type { Session, ProjectItem, DiscoveredProject, PeerInfo, LauncherDef } from './types'
 import type { View } from './routing'
 import { resolveViewFromPath, viewToPath, sessionPath } from './routing'
 import { buildProjectFolders, matchSession } from './projects'
@@ -47,6 +47,24 @@ export const discovered = signal<DiscoveredProject[]>([])
 export const unmatchedActiveCount = signal(0)
 
 export const peers = signal<PeerInfo[]>([])
+
+/**
+ * Per-session pi-rpc header state: compaction and retry badges.
+ * Updated by PiSessionView when it processes relevant stream events.
+ * Read by sidebar SessionItem to show concise state badges.
+ */
+export interface PiSessionBadgeState {
+  compacting: boolean
+  retrying: boolean
+  lastCompactionResult: 'done' | 'aborted' | null
+  lastRetryResult: 'success' | 'failed' | null
+}
+export const piSessionBadges = signal<ReadonlyMap<string, PiSessionBadgeState>>(new Map())
+export function updatePiSessionBadges(sessionId: string, state: PiSessionBadgeState): void {
+  const next = new Map(piSessionBadges.value)
+  next.set(sessionId, state)
+  piSessionBadges.value = next
+}
 
 // ── Git status (push-based, updated via git-status SSE events) ─────────────
 
@@ -578,7 +596,7 @@ export function markSessionRead(id: string) {
     dsMap.set(id, { status: updatedSession.status, unread: updatedSession.unread })
     sessionDotStates.value = dsMap
   }
-  fetch(`/v1/sessions/${id}/read`, { method: 'POST' }).catch(() => {})
+  fetch(`/v1/sessions/${id}/read`, { method: 'POST' }).catch(() => undefined)
 }
 
 export function setProjects(data: { configured: ProjectItem[]; discovered: DiscoveredProject[]; unmatchedActiveCount: number }) {
@@ -884,7 +902,7 @@ export function initStore(): () => void {
           sessions.value = list
           sessionDotStates.value = buildDotStates(list)
         })
-      }).catch(() => {})
+      }).catch(() => undefined)
     }
     sseConnected = true
   })

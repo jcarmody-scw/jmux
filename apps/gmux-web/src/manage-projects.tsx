@@ -87,7 +87,7 @@ export function ManageProjectsModal({
     return discoveredVal.filter(d =>
       d.suggested_slug.toLowerCase().includes(lowerFilter)
       || d.paths.some(p => p.toLowerCase().includes(lowerFilter))
-      || (d.remote && d.remote.toLowerCase().includes(lowerFilter)),
+      || (d.remote?.toLowerCase().includes(lowerFilter)),
     )
   }, [discoveredVal, lowerFilter])
 

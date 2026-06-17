@@ -14,7 +14,7 @@ export function selectAllAndCopy(element: HTMLElement): void {
   sel?.removeAllRanges()
   sel?.addRange(range)
   const text = sel?.toString()
-  if (text) navigator.clipboard.writeText(text).catch(() => {})
+  if (text) navigator.clipboard.writeText(text).catch(() => undefined)
 }
 
 export function clearSelection(): void {

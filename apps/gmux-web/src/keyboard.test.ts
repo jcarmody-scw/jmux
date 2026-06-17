@@ -36,8 +36,8 @@ class FakeKeyboardEvent {
   }
 
   preventDefault()             { this.defaultPrevented = true }
-  stopImmediatePropagation()   {}
-  stopPropagation()            {}
+  stopImmediatePropagation()   { /* no-op for fake event */ }
+  stopPropagation()            { /* no-op for fake event */ }
 }
 
 /** Minimal element with capture-phase addEventListener / dispatchEvent. */

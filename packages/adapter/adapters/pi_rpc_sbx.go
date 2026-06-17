@@ -20,9 +20,9 @@ func init() {
 	All = append(All, NewPiRPCSbx())
 }
 
-// PiRPCSbx is the adapter for pi sessions driven by the pi-rpc Node subprocess
-// running inside a Docker AI Sandbox (sbx). The Node process runs on the host
-// but launches pi inside the sandbox via the --sbx flag.
+// PiRPCSbx is the adapter for pi sessions driven by pi --mode rpc inside a
+// Docker AI Sandbox (sbx). The host launches sbx exec and pi runs inside the
+// sandbox without a --sbx flag.
 // All file capabilities delegate to PiRPC (and transitively to Pi).
 type PiRPCSbx struct {
 	sdk *PiRPC
@@ -36,7 +36,7 @@ func NewPiRPCSbx() *PiRPCSbx {
 
 func (a *PiRPCSbx) Name() string { return "pi-rpc-sbx" }
 
-// Discover returns true if both sbx and the pi-rpc-lib prerequisites are present.
+// Discover returns true if both sbx and the pi-rpc prerequisites are present.
 func (a *PiRPCSbx) Discover() bool {
 	if _, err := exec.LookPath("sbx"); err != nil {
 		return false
@@ -57,21 +57,20 @@ func (a *PiRPCSbx) Launchers() []adapter.Launcher {
 	return []adapter.Launcher{
 		{
 			ID:          "pi-rpc-sbx",
-			Label:       "pi (sdk, sandbox)",
-			Command:     []string{"pi-rpc-sbx"}, // sentinel; not executed directly
-			Description: "New pi session via SDK subprocess bridge (sandbox)",
-			Available:   false, // pending t-1142: sbx integration with pi --mode rpc
+			Label:       "pi-rpc-sbx",
+			Command:     []string{"pi-rpc-sbx"}, // sentinel; gmuxd detects SubprocessAdapter before exec
+			Description: "New pi-rpc session in the workspace sandbox",
+			Available:   a.Discover(),
 		},
 	}
 }
 
 // ── SubprocessAdapter ───────────────────────────────────────────────────────
 
-// SubprocessCommand returns the same Node command as PiRPC but with --sbx,
-// which tells pi-rpc-lib to create the pi session via sbx exec.
-func (a *PiRPCSbx) SubprocessCommand(cwd string) []string {
-	base := a.sdk.SubprocessCommand(cwd)
-	return append(base, "--sbx")
+// SubprocessCommand runs pi RPC mode inside the workspace sandbox.
+// RPC sessions use JSON over stdin/stdout, so this uses -i rather than -it.
+func (a *PiRPCSbx) SubprocessCommand(_ string) []string {
+	return []string{"sbx", "exec", "-i", "sbx-pi-james-agent-workspace", "--", "pi", "--mode", "rpc"}
 }
 
 // ── File capabilities (delegate to PiRPC) ───────────────────────────────────

@@ -392,13 +392,6 @@ func TestCommandResponseLinesBroadcast(t *testing.T) {
 		t.Fatalf("stdin write: %v", err)
 	}
 
-	rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	_, data, err := conn.Read(rctx)
-	if err != nil {
-		t.Fatalf("ws read: %v", err)
-	}
-
 	var got struct {
 		ID      string `json:"id"`
 		Type    string `json:"type"`
@@ -410,14 +403,36 @@ func TestCommandResponseLinesBroadcast(t *testing.T) {
 			} `json:"commands"`
 		} `json:"data"`
 	}
-	if err := json.Unmarshal(data, &got); err != nil {
-		t.Fatalf("parse response: %v", err)
+	for {
+		rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		_, data, err := conn.Read(rctx)
+		cancel()
+		if err != nil {
+			t.Fatalf("ws read: %v", err)
+		}
+		got = struct {
+			ID      string `json:"id"`
+			Type    string `json:"type"`
+			Command string `json:"command"`
+			Success bool   `json:"success"`
+			Data    struct {
+				Commands []struct {
+					Name string `json:"name"`
+				} `json:"commands"`
+			} `json:"data"`
+		}{}
+		if err := json.Unmarshal(data, &got); err != nil {
+			t.Fatalf("parse response: %v", err)
+		}
+		if got.ID == "commands-1" || got.Command == "get_commands" {
+			break
+		}
 	}
 	if got.ID != "commands-1" || got.Type != "response" || got.Command != "get_commands" || !got.Success {
-		t.Fatalf("unexpected response: %s", data)
+		t.Fatalf("unexpected response: %+v", got)
 	}
 	if len(got.Data.Commands) != 1 || got.Data.Commands[0].Name != "auth-refresh" {
-		t.Fatalf("commands not forwarded: %s", data)
+		t.Fatalf("commands not forwarded: %+v", got)
 	}
 
 	proc.stdin.Close()
@@ -492,6 +507,65 @@ func TestPromptTextTranslation(t *testing.T) {
 	proc := m.sessions["sess-7"]
 	m.mu.Unlock()
 	proc.stdin.Close()
+}
+
+func TestReconnectReplaysPriorSessionEvents(t *testing.T) {
+	s := newTestStore("sess-replay")
+	m := New(s)
+
+	launchHelper(t, m, "sess-replay", "echo-stdin")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		m.HandleWebSocket(w, r, "sess-replay")
+	}))
+	defer srv.Close()
+
+	ctx := context.Background()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/"
+
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("initial dial: %v", err)
+	}
+
+	want := `{"type":"message_start","message":{"role":"user","content":[{"type":"text","text":"replay regression marker"}]}}`
+	m.mu.Lock()
+	proc := m.sessions["sess-replay"]
+	m.mu.Unlock()
+	if proc == nil {
+		t.Fatal("subprocess not found")
+	}
+	if _, err := proc.stdin.Write([]byte(want + "\n")); err != nil {
+		t.Fatalf("stdin write: %v", err)
+	}
+
+	readUntilString(t, conn, "initial client", want)
+	conn.Close(websocket.StatusNormalClosure, "reconnect")
+
+	reconnected, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("reconnect dial: %v", err)
+	}
+	defer reconnected.Close(websocket.StatusNormalClosure, "")
+
+	readUntilString(t, reconnected, "reconnected client", want)
+
+	proc.stdin.Close()
+}
+
+func readUntilString(t *testing.T, conn *websocket.Conn, label, want string) {
+	t.Helper()
+	for {
+		rctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		_, data, err := conn.Read(rctx)
+		cancel()
+		if err != nil {
+			t.Fatalf("%s read: %v", label, err)
+		}
+		if string(data) == want {
+			return
+		}
+	}
 }
 
 func TestLaunchProvidesPiRPCEnvironmentFallbacks(t *testing.T) {

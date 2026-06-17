@@ -285,13 +285,30 @@ function makeModel(expandedPaths: Set<string>): { getItem(path: string): FileTre
   return {
     getItem(path: string): FileTreeItemHandle | null {
       const isDir = path.endsWith('/')
-      if (!isDir) return { isDirectory: () => false, deselect: () => {}, focus: () => {}, isFocused: () => false, isSelected: () => false, select: () => {}, toggleSelect: () => {}, getPath: () => path } as unknown as FileTreeItemHandle
+      if (!isDir) {
+        return {
+          isDirectory: () => false,
+          deselect: () => undefined,
+          focus: () => undefined,
+          isFocused: () => false,
+          isSelected: () => false,
+          select: () => undefined,
+          toggleSelect: () => undefined,
+          getPath: () => path,
+        } as unknown as FileTreeItemHandle
+      }
       return {
         isDirectory: () => true,
         isExpanded: () => expandedPaths.has(path),
-        expand: () => {}, collapse: () => {}, toggle: () => {},
-        deselect: () => {}, focus: () => {}, isFocused: () => false,
-        isSelected: () => false, select: () => {}, toggleSelect: () => {},
+        expand: () => undefined,
+        collapse: () => undefined,
+        toggle: () => undefined,
+        deselect: () => undefined,
+        focus: () => undefined,
+        isFocused: () => false,
+        isSelected: () => false,
+        select: () => undefined,
+        toggleSelect: () => undefined,
         getPath: () => path,
       } as unknown as FileTreeDirectoryHandle
     },

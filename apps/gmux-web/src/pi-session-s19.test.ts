@@ -222,7 +222,7 @@ describe('reduceItems — details captured', () => {
     })
 
     const assistant = items.find(i => i.kind === 'assistant') as AssistantItem
-    const exec = assistant.toolExecMap['tc_1']
+    const exec = assistant.toolExecMap.tc_1
     expect(exec).toBeDefined()
     expect(exec.details).toEqual({ patch, diff: 'display diff', firstChangedLine: 3 })
     expect(exec.done).toBe(true)
@@ -246,7 +246,7 @@ describe('reduceItems — details captured', () => {
     })
 
     const assistant = items.find(i => i.kind === 'assistant') as AssistantItem
-    const exec = assistant.toolExecMap['tc_2']
+    const exec = assistant.toolExecMap.tc_2
     expect(exec.details).toBeUndefined()
   })
 })

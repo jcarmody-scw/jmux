@@ -516,6 +516,45 @@ body {
   color: var(--text-secondary);
 }
 
+/* Pi-rpc state badges in sidebar session items */
+.session-pi-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-family: 'Fira Code', monospace;
+  padding: 1px 5px;
+  border-radius: 3px;
+  line-height: 1.4;
+  font-weight: 500;
+}
+
+.session-pi-badge-compact {
+  background: color-mix(in srgb, var(--status-working, #d4a027) 18%, transparent);
+  color: var(--status-working, #d4a027);
+  animation: subtle-pulse 1.5s ease-in-out infinite;
+}
+
+.session-pi-badge-compact-done {
+  background: color-mix(in srgb, var(--text-muted) 12%, transparent);
+  color: var(--text-muted);
+}
+
+.session-pi-badge-compact-aborted {
+  background: color-mix(in srgb, var(--status-error, #e05252) 15%, transparent);
+  color: var(--status-error, #e05252);
+}
+
+.session-pi-badge-retry {
+  background: color-mix(in srgb, var(--status-working, #d4a027) 18%, transparent);
+  color: var(--status-working, #d4a027);
+  animation: subtle-pulse 1s ease-in-out infinite;
+}
+
+.session-pi-badge-retry-fail {
+  background: color-mix(in srgb, var(--status-error, #e05252) 15%, transparent);
+  color: var(--status-error, #e05252);
+}
+
 @keyframes subtle-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.35; }
@@ -554,7 +593,7 @@ body {
   background: oklch(22% 0.01 250 / 0.45);
 }
 .session-close-btn:hover {
-  background: oklch(28% 0.015 250) !important;
+  background: oklch(28% 0.015 250);
   color: var(--text);
 }
 
@@ -1242,7 +1281,7 @@ body {
 }
 .session-tab:hover .session-tab-close,
 .session-tab.selected .session-tab-close { opacity: 0.7; }
-.session-tab-close:hover { opacity: 1 !important; background: var(--bg-hover); }
+.session-tab-close:hover { opacity: 1; background: var(--bg-hover); }
 
 .session-tab-add {
   display: flex;
@@ -1264,7 +1303,7 @@ body {
 
 /* File tree fills the full sidebar in horizontal mode */
 .sidebar-files-pane-full {
-  flex: 1 !important;
+  flex: 1;
   min-height: 0;
 }
 
@@ -1692,7 +1731,7 @@ body {
    inherits the terminal background; real per-row/per-cell backgrounds still
    paint normally. */
 .terminal-container.wterm .term-grid {
-  background: transparent !important;
+  background: transparent;
 }
 
 /* wterm's renderer sets rowEl.style.background on each row based on the last
@@ -1702,7 +1741,7 @@ body {
    Do NOT clear box-shadow: the renderer uses `0 1px 0 <bgColor>` to fill the
    sub-pixel gap between rows. Removing it creates thin visible lines. */
 .terminal-container.wterm .term-row {
-  background: transparent !important;
+  background: transparent;
 }
 
 /* Style wterm's own scrollbar (shown when scrollback content exists). */
@@ -3251,6 +3290,30 @@ a.home-host-link:hover {
   min-height: 0;
 }
 
+.pi-session-messages,
+.pi-session-tool-detail,
+.pi-session-input-scrollable {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.pi-session-messages::-webkit-scrollbar,
+.pi-session-tool-detail::-webkit-scrollbar,
+.pi-session-input-scrollable::-webkit-scrollbar {
+  width: 3px;
+  height: 3px;
+}
+.pi-session-messages::-webkit-scrollbar-track,
+.pi-session-tool-detail::-webkit-scrollbar-track,
+.pi-session-input-scrollable::-webkit-scrollbar-track {
+  background: transparent;
+}
+.pi-session-messages::-webkit-scrollbar-thumb,
+.pi-session-tool-detail::-webkit-scrollbar-thumb,
+.pi-session-input-scrollable::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 2px;
+}
+
 /* Shared item base */
 .pi-session-item {
   line-height: 1.55;
@@ -3339,9 +3402,9 @@ a.home-host-link:hover {
 .pi-session-command-output {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
-  gap: 8px;
-  margin: -2px 0 4px 16px;
-  padding: 6px 10px;
+  gap: 6px;
+  margin: 0 0 2px 12px;
+  padding: 4px 8px;
   color: var(--text-secondary);
   background: var(--bg-secondary);
   border: 1px solid var(--border-subtle);
@@ -3353,6 +3416,15 @@ a.home-host-link:hover {
 .pi-session-command-output-prefix {
   color: var(--text-dim);
   user-select: none;
+}
+
+.pi-session-command-output-text {
+  min-width: 0;
+}
+
+.pi-session-command-output-line {
+  display: block;
+  line-height: 1.35;
 }
 
 .pi-session-command-output-warning {
@@ -3380,29 +3452,39 @@ a.home-host-link:hover {
   50% { opacity: 0; }
 }
 
-/* Thinking block */
-.pi-session-thinking {
-  margin: 4px 0;
+/* Thinking and tool blocks */
+.pi-session-block-row {
+  margin: 3px 0;
 }
-.pi-session-thinking-toggle {
+.pi-session-block-headline {
+  display: block;
+  width: 100%;
   background: none;
   border: none;
   color: var(--text-muted);
-  font-family: 'Fira Code', monospace;
-  font-size: 12px;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12.5px;
   cursor: pointer;
-  padding: 0;
-  opacity: 0.6;
+  padding: 2px 4px;
+  opacity: 0.68;
+  border-radius: 4px;
+  text-align: left;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
-.pi-session-thinking-toggle:hover {
+.pi-session-block-headline:hover {
   opacity: 1;
+  background: var(--bg-secondary);
+  color: var(--text);
 }
-.pi-session-thinking-body {
+.pi-session-block-detail {
   color: var(--text-muted);
   font-size: 12px;
   padding-left: 16px;
-  opacity: 0.7;
+  opacity: 0.76;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
   margin-top: 2px;
 }
 
@@ -3438,26 +3520,69 @@ a.home-host-link:hover {
   opacity: 1;
 }
 
+/* Compaction and retry state badges in the session header */
+.pi-session-header-badge {
+  display: inline-flex;
+  align-items: center;
+  font-family: 'Fira Code', monospace;
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 3px;
+  line-height: 1.5;
+  font-weight: 500;
+}
+
+.pi-session-header-badge-compact {
+  background: color-mix(in srgb, var(--status-working, #d4a027) 18%, transparent);
+  color: var(--status-working, #d4a027);
+  animation: subtle-pulse 1.5s ease-in-out infinite;
+}
+
+.pi-session-header-badge-retry {
+  background: color-mix(in srgb, var(--status-working, #d4a027) 18%, transparent);
+  color: var(--status-working, #d4a027);
+  animation: subtle-pulse 1s ease-in-out infinite;
+}
+
+.pi-session-decision-log {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+  color: var(--text-secondary);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.pi-session-decision-entry {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  min-width: 0;
+}
+
+.pi-session-decision-label {
+  flex-shrink: 0;
+  font-family: 'Fira Code', monospace;
+  font-size: 11px;
+  color: var(--accent);
+  opacity: 0.82;
+}
+
+.pi-session-decision-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Tool block */
 .pi-session-tool-row {
   margin: 3px 0;
 }
-
 .pi-session-tool-headline {
-  display: block;
-  width: 100%;
-  background: none;
-  border: none;
-  text-align: left;
-  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
-  font-size: 12.5px;
-  color: var(--text-muted);
-  padding: 2px 4px;
-  border-radius: 4px;
-  cursor: pointer;
-  white-space: pre-wrap;
-  word-break: break-all;
-  line-height: 1.5;
+  word-break: normal;
 }
 .pi-session-tool-headline:hover {
   background: var(--bg-secondary);
@@ -3482,6 +3607,9 @@ a.home-host-link:hover {
 .pi-session-tool-detail {
   max-height: 240px;
   overflow-y: auto;
+  overflow-x: hidden;
+  max-width: 100%;
+  box-sizing: border-box;
   margin: 4px 0 4px 16px;
   padding: 8px 12px;
   font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
@@ -3491,8 +3619,16 @@ a.home-host-link:hover {
   border-radius: 4px;
   background: var(--bg-tertiary, #0a0e18);
   color: var(--text-muted);
-  white-space: pre;
-  word-break: normal;
+  white-space: normal;
+}
+.pi-session-tool-detail-line {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .pi-session-tool-diff-add {
@@ -3723,7 +3859,7 @@ body.pi-session-right-panel-resizing {
 /* Input bar */
 .pi-session-input-bar {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 8px;
   padding: 10px 16px;
   background: var(--bg-surface);
@@ -3733,14 +3869,26 @@ body.pi-session-right-panel-resizing {
 
 .pi-session-input {
   flex: 1;
+  min-height: 34px;
+  max-height: calc((18px * 6) + 16px);
+  resize: none;
+  overflow-y: hidden;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 4px;
   color: var(--text);
   font-family: 'Fira Code', monospace;
   font-size: 13px;
-  padding: 6px 10px;
+  line-height: 18px;
+  padding: 7px 10px;
   outline: none;
+}
+
+.pi-session-input:not(.pi-session-input-scrollable) {
+  scrollbar-width: none;
+}
+.pi-session-input:not(.pi-session-input-scrollable)::-webkit-scrollbar {
+  display: none;
 }
 .pi-session-input:focus {
   border-color: var(--accent);
@@ -3748,6 +3896,9 @@ body.pi-session-right-panel-resizing {
 .pi-session-input::placeholder {
   color: var(--text-muted);
   opacity: 0.5;
+}
+.pi-session-input-scrollable {
+  overflow-y: auto;
 }
 .pi-session-input:disabled {
   opacity: 0.5;
@@ -3797,14 +3948,15 @@ body.pi-session-right-panel-resizing {
   font-family: 'Fira Code', monospace;
   font-size: 11px;
   cursor: pointer;
-  padding: 1px 0;
+  padding: 2px 0 2px 12px;
   text-align: left;
-  opacity: 0.55;
+  opacity: 0.72;
   line-height: 1.4;
   user-select: none;
 }
 .pi-session-turn-block-toggle:hover {
   opacity: 0.9;
+  color: var(--text-secondary);
 }
 .pi-session-turn-block-collapsed {
   opacity: 0.7;

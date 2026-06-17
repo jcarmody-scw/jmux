@@ -45,9 +45,9 @@ function makeFakeWasm(cell: CellSpec) {
       memory: { buffer: mem },
       // Used by init() — return a non-zero termPtr.
       init:                (_c: number, _r: number, _s: number) => 1,
-      resize:              () => {},
+      resize:              () => undefined,
       alloc_buffer:        (_size: number) => BUF_PTR,
-      free_buffer:         () => {},
+      free_buffer:         () => undefined,
       get_scrollback_count: () => 1,
       get_scrollback_line: (
         _termPtr: number,
@@ -70,12 +70,12 @@ function makeFakeWasm(cell: CellSpec) {
         return 1                         // line length = 1 cell
       },
       // Remaining exports needed by GhosttyCore internals (not exercised here).
-      write:              () => {},
-      update:             () => {},
+      write:              () => undefined,
+      update:             () => undefined,
       get_viewport:       () => 0,
       is_dirty:           () => 0,
       is_dirty_row:       () => 0,
-      clear_dirty:        () => {},
+      clear_dirty:        () => undefined,
       get_cursor_row:     () => 0,
       get_cursor_col:     () => 0,
       get_cursor_visible: () => 1,

@@ -119,7 +119,7 @@ describe('createTerminalIO — WASM error handling', () => {
         if (callCount++ === 0) throw error
         writes.push(typeof data === 'string' ? data : new TextDecoder().decode(data))
       },
-      resize() {},
+      resize() { /* no-op for fake terminal */ },
     } as unknown as WTerm
     return { term, writes }
   }

@@ -324,7 +324,7 @@ export function useWebSocket(opts: UseWebSocketOptions): void {
         reconnectTimer.current = setTimeout(connect, delay)
       }
 
-      ws.onerror = () => {}
+      ws.onerror = () => undefined
     }
 
     connect()

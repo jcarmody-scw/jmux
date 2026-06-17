@@ -382,7 +382,7 @@ describe('navigateToSession', () => {
     setNavigate(navigateMock as (url: string, replace?: boolean) => void)
   })
   afterEach(() => {
-    setNavigate(() => {})
+    setNavigate(() => undefined)
   })
 
   it('returns false and does not navigate when the session is unknown', () => {
