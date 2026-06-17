@@ -22,6 +22,8 @@ import (
 	"nhooyr.io/websocket"
 )
 
+const maxReplayEvents = 1000
+
 // Manager manages pi-rpc subprocess sessions.
 type Manager struct {
 	mu       sync.Mutex
@@ -34,8 +36,9 @@ type subprocess struct {
 	stdin io.WriteCloser
 	done  chan struct{}
 
-	mu    sync.Mutex
-	conns []*websocket.Conn
+	mu     sync.Mutex
+	conns  []*websocket.Conn
+	replay [][]byte
 }
 
 // New creates a Manager backed by the given session store.
@@ -202,20 +205,23 @@ func (m *Manager) readLoop(sessionID string, proc *subprocess, stdout io.Reader)
 			})
 		}
 
-		// Broadcast to all connected clients.
-		msg := append([]byte(nil), line...) // copy before concurrent reads
+		// Store the event for reconnect replay and broadcast to all connected clients.
+		msg := append([]byte(nil), line...) // copy before retaining/broadcasting
 		proc.mu.Lock()
-		conns := append([]*websocket.Conn(nil), proc.conns...)
-		proc.mu.Unlock()
+		proc.replay = append(proc.replay, msg)
+		if len(proc.replay) > maxReplayEvents {
+			proc.replay = append([][]byte(nil), proc.replay[len(proc.replay)-maxReplayEvents:]...)
+		}
 
-		log.Printf("pirpc: %s: broadcast to %d client(s): type=%s", sessionID, len(conns), peek.Type)
-		for _, conn := range conns {
+		log.Printf("pirpc: %s: broadcast to %d client(s): type=%s", sessionID, len(proc.conns), peek.Type)
+		for _, conn := range proc.conns {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			if err := conn.Write(ctx, websocket.MessageText, msg); err != nil {
 				log.Printf("pirpc: %s: write to client: %v", sessionID, err)
 			}
 			cancel()
 		}
+		proc.mu.Unlock()
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -283,28 +289,30 @@ func (m *Manager) HandleWebSocket(w http.ResponseWriter, r *http.Request, sessio
 	}
 	log.Printf("pirpc: ws client connected %s (remote=%s)", sessionID, r.RemoteAddr)
 
-	// Register this connection for broadcast.
+	// Replay retained session events before adding this connection to live
+	// broadcast. Holding proc.mu prevents readLoop from writing live events to
+	// this connection concurrently or missing events between replay and register.
 	proc.mu.Lock()
-	proc.conns = append(proc.conns, conn)
-	proc.mu.Unlock()
-
-	// Guard against the subprocess having already exited between the nil check
-	// above and registering the conn. If done is closed, waitLoop already ran
-	// and will not clean up this conn; close it here and bail out.
 	select {
 	case <-proc.done:
-		proc.mu.Lock()
-		for i, c := range proc.conns {
-			if c == conn {
-				proc.conns = append(proc.conns[:i], proc.conns[i+1:]...)
-				break
-			}
-		}
 		proc.mu.Unlock()
 		conn.Close(websocket.StatusNormalClosure, "process exited")
 		return
 	default:
 	}
+	for _, msg := range proc.replay {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := conn.Write(ctx, websocket.MessageText, msg); err != nil {
+			cancel()
+			proc.mu.Unlock()
+			conn.Close(websocket.StatusInternalError, "replay failed")
+			log.Printf("pirpc: %s: replay to client: %v", sessionID, err)
+			return
+		}
+		cancel()
+	}
+	proc.conns = append(proc.conns, conn)
+	proc.mu.Unlock()
 
 	defer func() {
 		proc.mu.Lock()
