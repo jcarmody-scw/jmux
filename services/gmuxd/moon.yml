@@ -199,6 +199,13 @@ tasks:
       - "internal/**/*"
       - "go.mod"
       - "/packages/adapter/**/*.go"
+      - "/apps/gmux-web/src/**/*"
+      - "/apps/gmux-web/public/**/*"
+      - "/apps/gmux-web/index.html"
+      - "/apps/gmux-web/package.json"
+      - "/apps/gmux-web/vite.config.ts"
+      - "/apps/gmux-web/tsconfig.json"
+      - "/pnpm-lock.yaml"
 
   install:
     script: |
